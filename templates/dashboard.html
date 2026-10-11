@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Teacher dashboard</h1>
+  <p>Track student submissions, answer-sheet quality, and learning gaps.</p>
+</section>
+<section class="stats-grid">
+  <div class="stat-box">
+    <span class="label">Processed submissions</span>
+    <strong>0</strong>
+  </div>
+  <div class="stat-box">
+    <span class="label">Average score</span>
+    <strong>0%</strong>
+  </div>
+  <div class="stat-box">
+    <span class="label">Unresolved reviews</span>
+    <strong>0</strong>
+  </div>
+</section>
+{% endblock %}
