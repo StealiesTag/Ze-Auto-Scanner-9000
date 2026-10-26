@@ -24,26 +24,17 @@ This project is a modular Flask application for automated answer-sheet scanning,
 - `uploads/`: server-side image storage.
 - `tests/`: pytest tests for validation and database constraints.
 
-## Stage status
+## MVP status
 
-### Stage 1: completed foundation
+The local MVP supports student records and CSV import, assessment and answer-key editing, A4 sheet generation, QR and ArUco identification, perspective alignment, bubble recognition, weighted grading, PostgreSQL submission persistence, teacher correction history, and class analytics with configured-resource recommendations.
 
-The application now includes:
+The Flask factory registers models before Flask-Migrate inspects metadata. PostgreSQL via Psycopg 3 is required; SQLite is rejected. The included initial Alembic revision is `20261026_0001`. No migration history existed in the scaffold before it was added, so inspect and back up any pre-existing database before applying this revision.
 
-- Flask application factory
-- PostgreSQL-ready SQLAlchemy configuration using `DATABASE_URL`
-- SQLAlchemy models for Student, Assessment, Question, Submission, Response, and LearningResource
-- Unique constraints and indexes for duplicate prevention
-- A migration-ready project structure using Flask-Migrate/Alembic conventions
-- Basic project tests that are automatically skipped if the PostgreSQL test database is not configured
-
-### Future stages
-
-The remaining project stages are scaffolded at the module level and are intentionally built as small, testable services so they can be expanded without ending up in one giant file.
+This is a local, single-teacher MVP. It does not include authentication, production deployment safeguards, ESP32/Canvas integration, handwriting recognition, or written-answer grading.
 
 ## Local setup
 
-### 1) Create and activate a virtual environment
+### 1) Create and activate a virtual environment (Python 3.11+)
 
 PowerShell:
 
@@ -66,16 +57,17 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 3) Create PostgreSQL database
+### 3) Create PostgreSQL databases
 
 On PostgreSQL, create a local database and user:
 
 ```sql
-CREATE DATABASE automated_grading;
-CREATE DATABASE automated_grading_test;
+CREATE USER grading_user WITH PASSWORD 'choose-a-local-password';
+CREATE DATABASE automated_grading OWNER grading_user;
+CREATE DATABASE automated_grading_test OWNER grading_user;
 ```
 
-Then add the connection string to a `.env` file:
+Copy `.env.example` to `.env`, then set the credentials locally:
 
 ```env
 DATABASE_URL=postgresql+psycopg://username:password@localhost:5432/automated_grading
@@ -83,6 +75,10 @@ TEST_DATABASE_URL=postgresql+psycopg://username:password@localhost:5432/automate
 SECRET_KEY=replace-with-a-random-secret
 UPLOAD_FOLDER=uploads
 MAX_UPLOAD_SIZE=16777216
+MAX_IMAGE_DIMENSION=8000
+OMR_FILL_THRESHOLD=0.18
+OMR_AMBIGUITY_MARGIN=0.10
+RECOMMENDATION_ERROR_THRESHOLD=0.40
 FLASK_ENV=development
 HOST=127.0.0.1
 PORT=5000
@@ -90,18 +86,19 @@ PORT=5000
 
 Keep `.env` out of Git; the repository already ignores it.
 
-### 4) Initialize migrations
+### 4) Apply the included migration
 
-```bash
-flask --app app db init
-flask --app app db migrate -m "initial schema"
-flask --app app db upgrade
+```powershell
+python -m flask --app app db history
+python -m flask --app app db upgrade
 ```
+
+`migrations/` already exists and contains the initial revision. Do not run `db init` over it. Do not use `db stamp` to hide migration drift. For an existing database, take a backup and inspect its Alembic version and schema before upgrading; this project does not automatically reconcile manually-created tables.
 
 ### 5) Start the app
 
-```bash
-flask --app app run --host 127.0.0.1 --port 5000
+```powershell
+python -m flask --app app run --host 127.0.0.1 --port 5000
 ```
 
 or:
@@ -110,27 +107,26 @@ or:
 python app.py
 ```
 
+The app binds to `127.0.0.1` and runs with the debugger disabled by default. It has no authentication, so keep it local and do not expose it to a network.
+
 ## Test workflow
 
-Run the project tests with a configured PostgreSQL test database:
+Run the tests with a dedicated, empty PostgreSQL test database. The test fixture requires a `postgresql+psycopg` URL whose database name ends in `_test` or `_testing`; it never falls back to `DATABASE_URL`.
 
-```bash
+```powershell
 $env:TEST_DATABASE_URL='postgresql+psycopg://username:password@localhost:5432/automated_grading_test'
 python -m pytest -q
 ```
 
-The database tests are intentionally skipped when no test database is configured so the project remains safe to run in a development environment without a local PostgreSQL server.
+Database integration tests are skipped when `TEST_DATABASE_URL` is not configured. The fixture uses a transaction rollback and does not drop tables or delete existing records. Run migrations against the dedicated test database before testing when it already exists.
 
-## Safe reset and sample data
+## Synthetic verification
 
-To reset the development database safely:
+The automated suite creates synthetic ArUco pages, QR codes, and marked bubbles in memory. These verify QR decoding, marker alignment under rotation/perspective, OMR states, brightness tolerance, PDF output, and grading. A real printer and camera were not available for physical-sheet verification.
 
-```sql
-DROP DATABASE IF EXISTS automated_grading;
-CREATE DATABASE automated_grading;
-```
+To verify migration output without a PostgreSQL server, set `DATABASE_URL` and run `python -m flask --app app db upgrade --sql`. This prints SQL only and does not modify a database.
 
-Then re-run the migration upgrade step above.
+There is no bundled sample-data/reset script. For a clean test run, create a new empty database with an `_test` suffix rather than dropping or resetting a database that may contain data.
 
 ## Security and privacy notes
 
@@ -140,6 +136,9 @@ Student records and submitted answer sheets are sensitive educational data. Hand
 
 - The code avoids string concatenation when interacting with SQL; all database operations use the ORM layer.
 - Uploaded filenames are not trusted and should be safely renamed server-side before storage.
+- Generated sheets use an A4 coordinate system in millimeters measured from the page's top-left. The canonical processing image is 1240 by 1754 pixels. ArUco IDs 0-3 are 15 mm squares at the four corners; bubble centers are at X=82, 108, 134, and 160 mm, with question rows starting at Y=97 mm at 5.2 mm spacing. The same constants are defined in `services/sheet_layout.py` and used by both PDF generation and OMR.
+- Blank responses earn zero and count as unanswered. Multiple marks and ambiguous readings earn no points and keep the submission in review. A teacher can correct the answer or explicitly finalize a review while leaving uncertain responses ungraded.
+- The default bubble threshold is a 0.18 dark-pixel ratio with a 0.10 runner-up margin; tune using actual printer and camera samples before relying on grades.
 - Learning-resource recommendations are rule-based and transparent; they highlight possible learning gaps rather than proving that a student lacks a skill.
 - The project does not implement AI-based grading or handwriting recognition. Those are intentionally excluded from the first version to keep the architecture realistic and maintainable.
 
@@ -149,6 +148,6 @@ Student records and submitted answer sheets are sensitive educational data. Hand
 - `services/` isolates logic for grading, image analysis, generation, and recommendation.
 - `routes/` handles HTTP responsibilities and keeps templates thin.
 - `templates/` and `static/` separate presentation from behavior.
-- `tests/` keeps validation and data integrity checks independent of the web layer.
+- `tests/` keeps synthetic processing tests independent of PostgreSQL and marks database integration tests as skipped when no dedicated PostgreSQL test database is available.
 
 This makes it easier to explain the application to beginners and to extend it later with new features without creating a single unmaintainable file.

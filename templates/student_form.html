@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block title %}{{ 'Edit' if student else 'Add' }} student{% endblock %}
+{% block content %}
+<section class="card form-narrow">
+  <a href="{{ url_for('student.list_students') }}">&larr; Students</a>
+  <h1 class="mt-3">{{ 'Edit student' if student else 'Add student' }}</h1>
+  <form method="post" class="vstack gap-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div><label class="form-label" for="student_number">Student number</label><input class="form-control" id="student_number" name="student_number" maxlength="50" required value="{{ student.student_number if student else '' }}"></div>
+    <div><label class="form-label" for="name">Full name</label><input class="form-control" id="name" name="name" maxlength="200" required value="{{ student.name if student else '' }}"></div>
+    <div><label class="form-label" for="class_section">Class / section</label><input class="form-control" id="class_section" name="class_section" maxlength="100" required value="{{ student.class_section if student else '' }}"></div>
+    <button class="btn btn-primary align-self-start">{{ 'Save changes' if student else 'Add student' }}</button>
+  </form>
+</section>
+{% endblock %}

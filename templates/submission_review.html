@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block title %}Review submission {{ submission.id }}{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap"><div><p class="eyebrow">SUBMISSION REVIEW</p><h1>{{ submission.student.name }}</h1><p class="text-muted">{{ submission.assessment.title }} · {{ submission.student.student_number }} · {{ submission.submitted_at.strftime('%Y-%m-%d %H:%M UTC') }}</p></div>
+    <div class="score-readout"><strong>{{ submission.score }} / {{ submission.total_points }}</strong><span>{{ submission.review_status|replace('_',' ')|title }}</span></div></div>
+  {% if submission.processing_notes.get('warnings') %}<div class="alert alert-warning">{{ submission.processing_notes.get('warnings')|join(' ') }}</div>{% endif %}
+</section>
+<section class="row g-3 mb-3">
+  {% for kind, label in [('original','Original upload'),('aligned','Aligned page'),('debug','Marker diagnostics')] %}
+    {% if submission[kind ~ '_image'] %}<div class="col-md-4"><div class="card"><h2>{{ label }}</h2><a href="{{ url_for('scanning.submission_image', submission_id=submission.id, kind=kind) }}" target="_blank"><img class="scan-preview" src="{{ url_for('scanning.submission_image', submission_id=submission.id, kind=kind) }}" alt="{{ label }} for submission {{ submission.id }}"></a></div></div>{% endif %}
+  {% endfor %}
+</section>
+<section class="card"><h2>Detected responses and answer key</h2><div class="table-responsive"><table class="table align-middle"><thead><tr><th>Question</th><th>Answer key</th><th>Detected</th><th>Status</th><th>Confidence</th><th>Correction</th></tr></thead><tbody>
+  {% for response in responses %}<tr><td><strong>Q{{ response.question.question_number }}</strong><div class="small text-muted">{{ response.question.prompt }}</div></td><td>{{ response.question.correct_answer }}</td><td>{{ response.answer or '—' }}{% if response.manual_correction_flag %}<span class="badge text-bg-info ms-1">Teacher corrected</span>{% endif %}</td><td><span class="badge {{ 'text-bg-success' if response.detection_status == 'detected' else 'text-bg-warning' }}">{{ response.detection_status|replace('_',' ') }}</span></td><td>{{ '%.2f'|format(response.confidence) }}</td><td>
+    <form method="post" action="{{ url_for('scanning.correct_response', submission_id=submission.id, response_id=response.id) }}" class="d-flex gap-1 flex-wrap"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select class="form-select form-select-sm" name="answer" aria-label="Correct answer for question {{ response.question.question_number }}"><option value="">Blank / unanswered</option>{% for option in ['A','B','C','D'] %}<option value="{{ option }}" {% if response.answer == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select><input class="form-control form-control-sm" name="note" maxlength="500" placeholder="Audit note (optional)"><button class="btn btn-sm btn-outline-primary">Save</button></form>
+    {% if response.corrections %}<details class="small mt-2"><summary>Correction history ({{ response.corrections|length }})</summary>{% for correction in response.corrections %}<div>{{ correction.created_at.strftime('%Y-%m-%d %H:%M UTC') }}: {{ correction.previous_answer or 'blank' }} → {{ correction.corrected_answer or 'blank' }}{% if correction.note %} · {{ correction.note }}{% endif %}</div>{% endfor %}</details>{% endif %}
+  </td></tr>{% endfor %}
+</tbody></table></div></section>
+{% if submission.review_status == 'required' %}<section class="card"><h2>Finalize review</h2><p>Finalizing unresolved ambiguous answers keeps them ungraded and excluded from accuracy analytics.</p><form method="post" action="{{ url_for('scanning.finalize_review', submission_id=submission.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label class="form-check mb-3"><input class="form-check-input" type="checkbox" name="confirm_finalization" value="yes" required><span class="form-check-label">I reviewed the sheet; unresolved responses will remain ungraded.</span></label><button class="btn btn-warning">Finalize review</button></form></section>{% endif %}
+{% endblock %}

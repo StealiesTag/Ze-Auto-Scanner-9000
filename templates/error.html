@@ -1,0 +1,8 @@
+{% extends 'base.html' %}
+{% block title %}Error {{ status_code }}{% endblock %}
+{% block content %}
+<section class="card form-narrow">
+  <p class="eyebrow">REQUEST NOT COMPLETED</p><h1>{{ status_code }}</h1><p>{{ message }}</p>
+  <a class="btn btn-outline-primary align-self-start" href="{{ url_for('dashboard.index') }}">Return to dashboard</a>
+</section>
+{% endblock %}

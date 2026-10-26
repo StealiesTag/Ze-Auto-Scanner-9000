@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %}{{ 'Edit' if assessment else 'Create' }} assessment{% endblock %}
+{% block content %}
+<section class="card">
+  <a href="{{ url_for('assessment.list_assessments') }}">&larr; Assessments</a>
+  <h1 class="mt-3">{{ 'Edit assessment' if assessment else 'Create assessment' }}</h1>
+  {% set questions = assessment.questions if assessment else [none] %}
+  <form method="post" id="assessment-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="row g-3 mb-4">
+      <div class="col-md-5"><label class="form-label">Title</label><input class="form-control" name="title" maxlength="200" required value="{{ assessment.title if assessment else '' }}"></div>
+      <div class="col-md-3"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="100" required value="{{ assessment.subject if assessment else '' }}"></div>
+      <div class="col-md-4"><label class="form-label">Class / section</label><input class="form-control" name="class_section" maxlength="100" required value="{{ assessment.class_section if assessment else '' }}"></div>
+    </div>
+    <div class="d-flex justify-content-between align-items-center mb-2"><h2>Questions</h2><button class="btn btn-outline-primary" type="button" id="add-question">Add question</button></div>
+    <div id="question-list">
+      {% for question in questions %}
+      <fieldset class="question-editor">
+        <legend>Question {{ loop.index }}</legend>
+        <div class="mb-2"><label class="form-label">Prompt</label><textarea class="form-control" name="prompt" maxlength="2000" required>{{ question.prompt if question else '' }}</textarea></div>
+        <div class="row g-2">
+          {% for option in ['a','b','c','d'] %}<div class="col-md-6"><label class="form-label">Choice {{ option|upper }}</label><input class="form-control" name="option_{{ option }}" maxlength="500" required value="{{ question['option_' ~ option] if question else '' }}"></div>{% endfor %}
+          <div class="col-md-3"><label class="form-label">Correct answer</label><select class="form-select" name="correct_answer" required>{% for option in ['A','B','C','D'] %}<option value="{{ option }}" {% if question and question.correct_answer == option %}selected{% endif %}>{{ option }}</option>{% endfor %}</select></div>
+          <div class="col-md-3"><label class="form-label">Points</label><input class="form-control" name="points" type="number" min="0.01" max="999999" step="0.01" required value="{{ question.points if question else '1.00' }}"></div>
+          <div class="col-md-6"><label class="form-label">Learning objective</label><input class="form-control" name="learning_objective" maxlength="255" required value="{{ question.learning_objective if question else '' }}"></div>
+        </div>
+        <button class="btn btn-sm btn-outline-danger remove-question mt-3" type="button">Remove question</button>
+      </fieldset>
+      {% endfor %}
+    </div>
+    <button class="btn btn-primary mt-3">{{ 'Save assessment' if assessment else 'Create assessment' }}</button>
+  </form>
+</section>
+<template id="question-template">
+  <fieldset class="question-editor"><legend>New question</legend>
+    <div class="mb-2"><label class="form-label">Prompt</label><textarea class="form-control" name="prompt" maxlength="2000" required></textarea></div>
+    <div class="row g-2">
+      <div class="col-md-6"><label class="form-label">Choice A</label><input class="form-control" name="option_a" maxlength="500" required></div><div class="col-md-6"><label class="form-label">Choice B</label><input class="form-control" name="option_b" maxlength="500" required></div>
+      <div class="col-md-6"><label class="form-label">Choice C</label><input class="form-control" name="option_c" maxlength="500" required></div><div class="col-md-6"><label class="form-label">Choice D</label><input class="form-control" name="option_d" maxlength="500" required></div>
+      <div class="col-md-3"><label class="form-label">Correct answer</label><select class="form-select" name="correct_answer" required><option>A</option><option>B</option><option>C</option><option>D</option></select></div><div class="col-md-3"><label class="form-label">Points</label><input class="form-control" name="points" type="number" min="0.01" max="999999" step="0.01" value="1.00" required></div><div class="col-md-6"><label class="form-label">Learning objective</label><input class="form-control" name="learning_objective" maxlength="255" required></div>
+    </div><button class="btn btn-sm btn-outline-danger remove-question mt-3" type="button">Remove question</button>
+  </fieldset>
+</template>
+{% endblock %}

@@ -12,4 +12,3 @@ uploads/
 .coverage
 htmlcov/
 .DS_Store
-migrations/versions/

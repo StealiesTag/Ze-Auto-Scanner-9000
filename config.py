@@ -8,29 +8,27 @@ load_dotenv(BASE_DIR / ".env")
 
 
 class Config:
-    SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
+    SECRET_KEY = os.getenv("SECRET_KEY")
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "uploads")
+    SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
+    UPLOAD_FOLDER = str((BASE_DIR / os.getenv("UPLOAD_FOLDER", "uploads")).resolve())
     MAX_CONTENT_LENGTH = int(os.getenv("MAX_UPLOAD_SIZE", str(16 * 1024 * 1024)))
+    MAX_IMAGE_DIMENSION = int(os.getenv("MAX_IMAGE_DIMENSION", "8000"))
+    OMR_FILL_THRESHOLD = float(os.getenv("OMR_FILL_THRESHOLD", "0.18"))
+    OMR_AMBIGUITY_MARGIN = float(os.getenv("OMR_AMBIGUITY_MARGIN", "0.10"))
+    RECOMMENDATION_ERROR_THRESHOLD = float(os.getenv("RECOMMENDATION_ERROR_THRESHOLD", "0.40"))
     WTF_CSRF_ENABLED = True
-
-    @classmethod
-    def ensure_database_url(cls):
-        if not cls.SQLALCHEMY_DATABASE_URI:
-            raise RuntimeError(
-                "DATABASE_URL is not set. Copy .env.example to .env and configure PostgreSQL."
-            )
-        return cls.SQLALCHEMY_DATABASE_URI
 
 
 class DevelopmentConfig(Config):
-    DEBUG = True
+    DEBUG = False
 
 
 class TestingConfig(Config):
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL")
+    SECRET_KEY = os.getenv("SECRET_KEY", "test-only-secret")
+    SQLALCHEMY_DATABASE_URI = os.getenv("TEST_DATABASE_URL")
     WTF_CSRF_ENABLED = False
 
 

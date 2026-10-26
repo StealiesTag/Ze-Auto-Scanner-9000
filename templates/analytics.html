@@ -2,7 +2,46 @@
 {% block title %}Analytics{% endblock %}
 {% block content %}
 <section class="card">
-  <h1>Analytics dashboard</h1>
-  <p>Use correct denominators for each metric and clearly label unresolved records.</p>
+  <p class="eyebrow">CLASS PERFORMANCE</p><h1>Analytics</h1>
+  <form method="get" class="row g-2 mt-2"><div class="col-md-5"><label class="form-label" for="assessment_id">Assessment</label><select class="form-select" id="assessment_id" name="assessment_id"><option value="">All assessments</option>{% for item in assessments %}<option value="{{ item.id }}" {% if selected_assessment == item.id %}selected{% endif %}>{{ item.title }}</option>{% endfor %}</select></div><div class="col-auto align-self-end"><button class="btn btn-outline-primary">Apply</button></div></form>
+</section>
+<section class="stats-grid">
+  <div class="stat-box"><span class="label">Students</span><strong>{{ analytics.students }}</strong></div>
+  <div class="stat-box"><span class="label">Processed submissions</span><strong>{{ analytics.submissions }}</strong></div>
+  <div class="stat-box"><span class="label">Scored, finalized submissions</span><strong>{{ analytics.scored_submissions }}</strong></div>
+  <div class="stat-box"><span class="label">Awaiting review</span><strong>{{ analytics.awaiting_review }}</strong></div>
+</section>
+<div class="row g-3 mt-1">
+  <section class="col-lg-6"><div class="card h-100"><h2>Score summary</h2><p>Average: <strong>{{ '%.1f'|format(analytics.average_score) if analytics.average_score is not none else '—' }}%</strong> · Median: <strong>{{ '%.1f'|format(analytics.median_score) if analytics.median_score is not none else '—' }}%</strong></p><p class="small text-muted">Only processed submissions with review complete or not required are included.</p>
+    {% for label in ['0-49','50-59','60-69','70-79','80-89','90-100'] %}<div class="distribution-row"><span>{{ label }}%</span><div class="progress flex-grow-1"><div class="progress-bar" style="width: {{ (analytics.score_distribution.get(label, 0) / analytics.scored_submissions * 100) if analytics.scored_submissions else 0 }}%"></div></div><span>{{ analytics.score_distribution.get(label, 0) }}</span></div>{% endfor %}
+  </div></section>
+  <section class="col-lg-6"><div class="card h-100"><h2>Most missed questions</h2><div class="table-responsive"><table class="table"><thead><tr><th>Question</th><th>Correct rate</th><th>Valid responses</th></tr></thead><tbody>
+    {% for item in analytics.most_missed[:8] %}<tr><td>{{ item.assessment_title }} · Q{{ item.question_number }}</td><td>{{ '%.1f'|format(item.accuracy * 100) }}%</td><td>{{ item.valid_responses }}</td></tr>{% else %}<tr><td colspan="3" class="text-muted">No valid response data yet.</td></tr>{% endfor %}
+  </tbody></table></div></div></section>
+</div>
+<section class="card mt-3"><h2>Question accuracy</h2><div class="table-responsive"><table class="table"><thead><tr><th>Assessment</th><th>Question</th><th>Correct rate</th><th>Valid responses</th><th>Correct</th></tr></thead><tbody>
+  {% for item in analytics.questions %}<tr><td>{{ item.assessment_title }}</td><td>Q{{ item.question_number }}</td><td>{{ '%.1f'|format(item.accuracy * 100) if item.accuracy is not none else '—' }}</td><td>{{ item.valid_responses }}</td><td>{{ item.correct }}</td></tr>
+  {% else %}<tr><td colspan="5" class="text-muted">No questions match this filter.</td></tr>{% endfor %}
+</tbody></table></div><p class="small text-muted mb-0">Blank and unresolved responses are excluded; the valid-response count is shown for each question.</p></section>
+<section class="card"><h2>Learning-objective performance</h2><div class="table-responsive"><table class="table"><thead><tr><th>Objective</th><th>Incorrect rate</th><th>Valid responses</th><th>Incorrect</th></tr></thead><tbody>
+  {% for objective, stats in analytics.objectives.items() %}<tr><td>{{ objective }}</td><td>{{ '%.1f'|format(stats.incorrect / stats.valid_responses * 100) if stats.valid_responses else '—' }}%</td><td>{{ stats.valid_responses }}</td><td>{{ stats.incorrect }}</td></tr>
+  {% else %}<tr><td colspan="4" class="text-muted">No valid objective responses yet.</td></tr>{% endfor %}
+</tbody></table></div></section>
+<section class="card mt-3"><h2>Learning objectives needing attention</h2><p class="small text-muted">Objectives are flagged when at least {{ '%.0f'|format(analytics.recommendation_threshold * 100) }}% of valid responses are incorrect. This indicates a possible learning gap, not a conclusion about individual students.</p>
+  {% for item in analytics.recommendations %}<div class="recommendation-row"><div><strong>{{ item.objective }}</strong><div class="small text-muted">{{ item.incorrect }} incorrect of {{ item.valid_responses }} valid responses ({{ '%.1f'|format(item.error_rate * 100) }}%)</div></div>
+    <div>{% if item.resources %}{% for resource in item.resources %}<a class="resource-link" href="{{ resource.url }}" target="_blank" rel="noopener noreferrer">{{ resource.title }}</a>{% endfor %}{% else %}<span class="text-muted">No resource configured</span>{% endif %}</div></div>
+  {% else %}<p class="text-muted mb-0">No objectives currently cross the recommendation threshold.</p>{% endfor %}
+</section>
+<section class="card"><h2>Configure learning resources</h2><p class="text-muted">Add only materials selected by your teaching team. Resources are matched to questions by the exact learning-objective text.</p>
+  <form method="post" action="{{ url_for('analytics.add_resource') }}" class="row g-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="col-md-4"><label class="form-label" for="resource-title">Title</label><input class="form-control" id="resource-title" name="title" maxlength="200" required></div>
+    <div class="col-md-5"><label class="form-label" for="resource-url">URL</label><input class="form-control" id="resource-url" name="url" type="url" maxlength="500" placeholder="https://" required></div>
+    <div class="col-md-3"><label class="form-label" for="resource-type">Type</label><select class="form-select" id="resource-type" name="resource_type"><option value="reading">Reading</option><option value="video">Video</option><option value="practice">Practice</option><option value="lesson">Lesson</option><option value="other">Other</option></select></div>
+    <div class="col-md-6"><label class="form-label" for="resource-objective">Learning objective</label><input class="form-control" id="resource-objective" name="learning_objective" maxlength="255" required></div>
+    <div class="col-md-6"><label class="form-label" for="resource-description">Description</label><input class="form-control" id="resource-description" name="description" maxlength="5000" required></div>
+    <div class="col-12"><button class="btn btn-outline-primary">Save resource</button></div>
+  </form>
+  <div class="table-responsive mt-3"><table class="table"><thead><tr><th>Resource</th><th>Objective</th><th>Type</th></tr></thead><tbody>{% for resource in resources %}<tr><td><a href="{{ resource.url }}" target="_blank" rel="noopener noreferrer">{{ resource.title }}</a></td><td>{{ resource.learning_objective }}</td><td>{{ resource.resource_type|title }}</td></tr>{% else %}<tr><td colspan="3" class="text-muted">No learning resources have been configured.</td></tr>{% endfor %}</tbody></table></div>
 </section>
 {% endblock %}

@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}Scan answer sheets{% endblock %}
+{% block content %}
+<section class="card form-narrow">
+  <p class="eyebrow">SCAN INTAKE</p><h1>Upload answer sheet</h1>
+  <p class="text-muted">Use a full-page JPEG or PNG scan. The QR code and all four corner markers must be visible.</p>
+  <form method="post" enctype="multipart/form-data" class="vstack gap-3" id="upload-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div><label for="answer_sheet" class="form-label">Scanned sheet</label><input class="form-control" type="file" id="answer_sheet" name="answer_sheet" accept="image/jpeg,image/png,.jpg,.jpeg,.png" required></div>
+    <button class="btn btn-primary" id="upload-submit">Process sheet</button>
+    <div id="upload-progress" class="small text-muted" hidden>Uploading and analyzing image…</div>
+  </form>
+</section>
+<section class="card"><h2>Awaiting review</h2>
+  <div class="table-responsive"><table class="table"><thead><tr><th>Student</th><th>Assessment</th><th>Submitted</th><th>Score</th><th></th></tr></thead><tbody>
+  {% for submission in pending %}<tr><td>{{ submission.student.name }}</td><td>{{ submission.assessment.title }}</td><td>{{ submission.submitted_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ submission.score }} / {{ submission.total_points }}</td><td><a href="{{ url_for('scanning.review_submission', submission_id=submission.id) }}">Review</a></td></tr>
+  {% else %}<tr><td colspan="5" class="text-muted">No submissions are waiting for review.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

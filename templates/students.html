@@ -2,12 +2,31 @@
 {% block title %}Students{% endblock %}
 {% block content %}
 <section class="card">
-  <h1>Student records</h1>
-  <p>Search, import, and review student enrollment information.</p>
-  <ul>
-    <li>View all students</li>
-    <li>Import CSV uploads</li>
-    <li>Track class assignments</li>
-  </ul>
+  <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+    <div><h1>Students</h1><p class="text-muted mb-0">{{ students|length }} records</p></div>
+    <a class="btn btn-primary" href="{{ url_for('student.new_student') }}">Add student</a>
+  </div>
+  <form class="row g-2 mt-3" method="get">
+    <div class="col-sm-8"><label class="visually-hidden" for="student-search">Search students</label><input class="form-control" id="student-search" name="q" value="{{ search }}" placeholder="Name or student number"></div>
+    <div class="col-auto"><button class="btn btn-outline-secondary">Search</button></div>
+  </form>
+  <div class="table-responsive mt-3"><table class="table align-middle">
+    <thead><tr><th>Student number</th><th>Name</th><th>Class / section</th><th>Results</th><th></th></tr></thead>
+    <tbody>{% for student in students %}<tr>
+      <td>{{ student.student_number }}</td><td>{{ student.name }}</td><td>{{ student.class_section }}</td>
+      <td><a href="{{ url_for('student.student_results', student_id=student.id) }}">View results</a></td>
+      <td class="text-end"><a class="btn btn-sm btn-outline-secondary" href="{{ url_for('student.edit_student', student_id=student.id) }}">Edit</a>
+        <form class="d-inline" method="post" action="{{ url_for('student.delete_student', student_id=student.id) }}" onsubmit="return confirm('Delete this student record?')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-danger">Delete</button>
+        </form></td>
+    </tr>{% else %}<tr><td colspan="5" class="text-center text-muted py-4">No students found. Add one or import a CSV.</td></tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+<section class="card">
+  <h2>Import CSV</h2><p class="text-muted">Columns: student_number, name, class_section. If any row is invalid, the file is not imported.</p>
+  <form method="post" action="{{ url_for('student.import_csv') }}" enctype="multipart/form-data" class="d-flex gap-2 flex-wrap">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input class="form-control" type="file" name="csv_file" accept=".csv,text/csv" required>
+    <button class="btn btn-outline-primary">Validate and import</button>
+  </form>
 </section>
 {% endblock %}

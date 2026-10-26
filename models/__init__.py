@@ -1,6 +1,6 @@
 from .assessment import Assessment, LearningResource, Question
 from .student import Student
-from .submission import Response, Submission
+from .submission import AnswerCorrection, Response, Submission
 
 __all__ = [
     "Student",
@@ -8,5 +8,6 @@ __all__ = [
     "Question",
     "Submission",
     "Response",
+    "AnswerCorrection",
     "LearningResource",
 ]

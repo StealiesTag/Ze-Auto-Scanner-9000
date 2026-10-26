@@ -2,12 +2,17 @@
 {% block title %}Assessments{% endblock %}
 {% block content %}
 <section class="card">
-  <h1>Assessment management</h1>
-  <p>Create question banks, validate answer keys, and review results.</p>
-  <ul>
-    <li>Question setup and scoring</li>
-    <li>Learning objective mapping</li>
-    <li>Answer-key validation</li>
-  </ul>
+  <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+    <div><h1>Assessments</h1><p class="text-muted mb-0">Create answer keys and generate student sheets.</p></div>
+    <a class="btn btn-primary" href="{{ url_for('assessment.new_assessment') }}">Create assessment</a>
+  </div>
+  <div class="table-responsive mt-3"><table class="table align-middle">
+    <thead><tr><th>Assessment</th><th>Subject</th><th>Class / section</th><th>Questions</th><th>Submissions</th><th></th></tr></thead>
+    <tbody>{% for assessment in assessments %}<tr>
+      <td>{{ assessment.title }}</td><td>{{ assessment.subject }}</td><td>{{ assessment.class_section }}</td>
+      <td>{{ assessment.questions|length }}</td><td>{{ assessment.submissions|length }}</td>
+      <td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('assessment.assessment_detail', assessment_id=assessment.id) }}">Open</a></td>
+    </tr>{% else %}<tr><td colspan="6" class="text-center text-muted py-4">No assessments yet.</td></tr>{% endfor %}</tbody>
+  </table></div>
 </section>
 {% endblock %}

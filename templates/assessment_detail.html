@@ -1,0 +1,20 @@
+{% extends 'base.html' %}
+{% block title %}{{ assessment.title }}{% endblock %}
+{% block content %}
+<section class="card">
+  <a href="{{ url_for('assessment.list_assessments') }}">&larr; Assessments</a>
+  <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mt-3"><div><h1>{{ assessment.title }}</h1><p class="text-muted">{{ assessment.subject }} · {{ assessment.class_section }} · {{ assessment.questions|length }} questions</p></div>
+  {% if not assessment.submissions %}<a class="btn btn-outline-secondary" href="{{ url_for('assessment.edit_assessment', assessment_id=assessment.id) }}">Edit answer key</a>{% endif %}</div>
+  <h2>Answer key</h2><div class="table-responsive"><table class="table"><thead><tr><th>#</th><th>Prompt</th><th>Correct</th><th>Points</th><th>Objective</th></tr></thead><tbody>
+    {% for question in assessment.questions|sort(attribute='question_number') %}<tr><td>{{ question.question_number }}</td><td>{{ question.prompt }}<div class="small text-muted">A: {{ question.option_a }} · B: {{ question.option_b }} · C: {{ question.option_c }} · D: {{ question.option_d }}</div></td><td>{{ question.correct_answer }}</td><td>{{ question.points }}</td><td>{{ question.learning_objective }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="card"><h2>Submissions</h2><div class="table-responsive"><table class="table"><thead><tr><th>Student</th><th>Submitted</th><th>Score</th><th>Review</th><th></th></tr></thead><tbody>
+  {% for submission in submissions %}<tr><td>{{ submission.student.name }}</td><td>{{ submission.submitted_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ submission.score }} / {{ submission.total_points }} ({{ submission.percentage_score }}%)</td><td>{{ submission.review_status|replace('_',' ')|title }}</td><td><a href="{{ url_for('scanning.review_submission', submission_id=submission.id) }}">Details</a></td></tr>
+  {% else %}<tr><td colspan="5" class="text-muted">No results recorded yet.</td></tr>{% endfor %}
+</tbody></table></div></section>
+<section class="card"><h2>Generate answer sheets</h2>
+  {% if students %}<div class="table-responsive"><table class="table"><thead><tr><th>Student</th><th>Number</th><th></th></tr></thead><tbody>{% for student in students %}<tr><td>{{ student.name }}</td><td>{{ student.student_number }}</td><td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('assessment.answer_sheet', assessment_id=assessment.id, student_id=student.id) }}">Download PDF</a></td></tr>{% endfor %}</tbody></table></div>
+  {% else %}<p class="text-muted">No students are assigned to {{ assessment.class_section }}.</p>{% endif %}
+</section>
+{% endblock %}

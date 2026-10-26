@@ -1,9 +1,8 @@
-This folder is reserved for Flask-Migrate/Alembic migration files.
+This directory contains the Flask-Migrate/Alembic environment and initial PostgreSQL revision.
 
 Run:
 
-flask --app app db init
-flask --app app db migrate -m "initial schema"
-flask --app app db upgrade
+python -m flask --app app db history
+python -m flask --app app db upgrade
 
-The migration files will be created here after the database connection is configured.
+Do not run `db init` again. Back up and inspect any existing database before applying the initial revision; never use `db stamp` to conceal schema drift.
