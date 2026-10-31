@@ -3,13 +3,68 @@
 {% block content %}
 <section class="card form-narrow">
   <p class="eyebrow">SCAN INTAKE</p><h1>Upload answer sheet</h1>
-  <p class="text-muted">Use a full-page JPEG or PNG scan. The QR code and all four corner markers must be visible.</p>
+  <p class="text-muted">Upload a full-page JPEG or PNG of a completed V3 sheet. Camera streaming is not required.</p>
   <form method="post" enctype="multipart/form-data" class="vstack gap-3" id="upload-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <div><label for="answer_sheet" class="form-label">Scanned sheet</label><input class="form-control" type="file" id="answer_sheet" name="answer_sheet" accept="image/jpeg,image/png,.jpg,.jpeg,.png" required></div>
-    <button class="btn btn-primary" id="upload-submit">Process sheet</button>
-    <div id="upload-progress" class="small text-muted" hidden>Uploading and analyzing image…</div>
+    <div>
+      <label class="form-label" for="sheet_format">Sheet format</label>
+      <select class="form-select" id="sheet_format" name="sheet_format" required>
+        <option value="paparazzi_standard_v3" {% if not selection.get('sheet_format') or selection.get('sheet_format') == 'paparazzi_standard_v3' %}selected{% endif %}>Paparazzi Standard V3</option>
+        <option value="legacy_paparazzi" {% if selection.get('sheet_format') == 'legacy_paparazzi' %}selected{% endif %}>Legacy Paparazzi sheet (ArUco + QR)</option>
+      </select>
+    </div>
+    <div>
+      <label class="form-label" for="assessment_id">Assessment and answer key</label>
+      <select class="form-select" id="assessment_id" name="assessment_id" required>
+        <option value="">Select assessment</option>
+        {% for assessment in assessments %}
+        <option value="{{ assessment.id }}" {% if selection.get('assessment_id') == assessment.id|string %}selected{% endif %}>{{ assessment.title }} ({{ assessment.questions|length }} questions)</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="form-label" for="student_id">Student if known</label>
+      <select class="form-select" id="student_id" name="student_id">
+        <option value="">Use the sheet's seven-digit ID; choose manually if it cannot be matched</option>
+        {% for student in students %}
+        <option value="{{ student.id }}" {% if selection.get('student_id') == student.id|string %}selected{% endif %}>{{ student.name }} · {{ student.student_number }} · {{ student.class_section }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="form-label" for="question_count">V3 template</label>
+      <select class="form-select" id="question_count" name="question_count" required>
+        {% for count in [20, 50, 100] %}
+        <option value="{{ count }}" {% if selection.get('question_count', '20') == count|string %}selected{% endif %}>{{ count }} questions · A–E · A4 portrait</option>
+        {% endfor %}
+      </select>
+      <div class="form-text">The question count must match the selected assessment. The printed assessment code is not OCR-read; choose the assessment above.</div>
+    </div>
+    <div><label for="answer_sheet" class="form-label">Scanned sheet images</label><input class="form-control" type="file" id="answer_sheet" name="answer_sheet" accept="image/jpeg,image/png,.jpg,.jpeg,.png" multiple required><div class="form-text">Select one or more JPG, JPEG, or PNG images. Each V3 sheet will be saved as a draft for separate review.</div></div>
+    <div id="image-preview-container" hidden aria-live="polite">
+      <h2 class="h5">Image preview</h2>
+      <div id="answer-sheet-preview-list" class="row g-2"></div>
+      <p id="image-preview-error" class="small text-danger mt-2" role="alert" hidden></p>
+    </div>
+    <button class="btn btn-primary" id="upload-submit">Detect and review</button>
+    <div id="upload-progress" class="small text-muted" hidden>Detecting marks and reading bubbles…</div>
   </form>
+</section>
+{% if batch_results is defined %}
+<section class="card"><h2>Batch results</h2><ul class="mb-0">
+  {% for item in batch_results %}
+  <li><strong>{{ item.filename }}</strong>:
+    {% if item.error %}<span class="text-danger">{{ item.error }}</span>
+    {% else %}<a href="{{ item.url }}">{{ item.action }}</a>{% endif %}
+  </li>
+  {% endfor %}
+</ul></section>
+{% endif %}
+<section class="card"><h2>V3 scans awaiting confirmation</h2>
+  <div class="table-responsive"><table class="table"><thead><tr><th>Assessment</th><th>Questions</th><th>Detected student ID</th><th>Created</th><th></th></tr></thead><tbody>
+  {% for draft in drafts %}<tr><td>{{ draft.assessment.title }}</td><td>{{ draft.question_count }}</td><td>{{ draft.detected_student_number or 'Not confidently read' }}</td><td>{{ draft.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td><a href="{{ url_for('scanning.review_v3_draft', draft_id=draft.id) }}">Review</a></td></tr>
+  {% else %}<tr><td colspan="5" class="text-muted">No V3 scans are awaiting confirmation.</td></tr>{% endfor %}
+  </tbody></table></div>
 </section>
 <section class="card"><h2>Awaiting review</h2>
   <div class="table-responsive"><table class="table"><thead><tr><th>Student</th><th>Assessment</th><th>Submitted</th><th>Score</th><th></th></tr></thead><tbody>

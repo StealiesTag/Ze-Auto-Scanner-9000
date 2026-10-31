@@ -1,0 +1,18 @@
+{
+  "format": "Paparazzi Standard",
+  "version": "PAPARAZZI-OMR-A4-V3",
+  "coordinate_system": "top_left_origin_mm",
+  "source": "Measured from circle vector bounds in the supplied individual V3 PDFs; original PDFs and profile remain unchanged.",
+  "student_id": {
+    "first_bubble_center_mm": [30.3, 46.85]
+  },
+  "answers": {
+    "first_row_center_y_mm": 98.15,
+    "choice_pitch_mm": 5.0,
+    "column_first_bubble_x_mm_by_question_count": {
+      "20": [27.3, 123.3],
+      "50": [27.3, 123.3],
+      "100": [27.3, 73.8, 120.3, 166.8]
+    }
+  }
+}

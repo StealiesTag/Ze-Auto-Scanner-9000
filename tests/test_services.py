@@ -16,7 +16,6 @@ from services.grading_service import apply_manual_correction, grade_detections
 from services.image_processor import ImageProcessingError, align_sheet, decode_qr, validate_uploaded_image
 from services.omr_service import classify_bubbles, detect_answers
 from services.recommendation_service import recommend_learning_objectives, validate_resource_payload
-from services.sheet_generator import generate_answer_sheet_pdf, make_qr_payload
 from services.sheet_layout import (
     BUBBLE_X_MM,
     CANONICAL_HEIGHT,
@@ -31,7 +30,7 @@ from services.sheet_layout import (
     mm_to_pixel,
 )
 from services.student_service import validate_student_payload
-from services.submission_service import parse_qr_identity
+from services.submission_service import make_qr_payload, parse_qr_identity
 
 
 def synthetic_sheet():
@@ -66,6 +65,23 @@ def test_student_and_assessment_validation():
     payload = {"title": "Arithmetic", "subject": "Math", "class_section": "7A", "questions": [question]}
     assert validate_assessment_payload(payload) == (True, [])
     payload["questions"][0]["correct_answer"] = "Z"
+    assert not validate_assessment_payload(payload)[0]
+
+
+def test_assessment_validation_supports_v3_100_questions_and_choice_e():
+    question = {
+        "prompt": "Select the correct answer", "option_a": "A", "option_b": "B", "option_c": "C",
+        "option_d": "D", "option_e": "E", "correct_answer": "E", "points": "1.00",
+        "learning_objective": "Validation",
+    }
+    payload = {
+        "title": "V3 Assessment", "subject": "Science", "class_section": "9A",
+        "questions": [question.copy() for _ in range(100)],
+    }
+    assert validate_assessment_payload(payload) == (True, [])
+    payload["questions"].append(question.copy())
+    assert not validate_assessment_payload(payload)[0]
+    payload["questions"][0]["option_e"] = ""
     assert not validate_assessment_payload(payload)[0]
 
 
@@ -140,17 +156,6 @@ def test_qr_decode_and_identity_payload_round_trip():
         parse_qr_identity('{"s":17,"a":29,"name":"not allowed"}')
 
 
-def test_pdf_sheet_generation_writes_downloadable_document():
-    student = SimpleNamespace(id=17, name="Fictional Student", student_number="TEST-17")
-    question = SimpleNamespace(question_number=1, correct_answer="A", prompt="Question?", option_a="one",
-                               option_b="two", option_c="three", option_d="four")
-    assessment = SimpleNamespace(id=29, title="Synthetic Assessment", questions=[question])
-    output = BytesIO()
-    generate_answer_sheet_pdf(student, assessment, output)
-    assert output.getvalue().startswith(b"%PDF-")
-    assert len(output.getvalue()) > 1000
-
-
 def test_invalid_upload_type_and_size_are_rejected():
     invalid_type = FileStorage(stream=BytesIO(b"not an image"), filename="sheet.svg")
     with pytest.raises(ImageProcessingError, match="JPEG and PNG"):
@@ -199,6 +204,17 @@ def test_manual_correction_preserves_detection_and_recalculates_score():
     assert submission.review_status == "complete"
 
 
+def test_manual_correction_accepts_choice_e():
+    question = SimpleNamespace(question_number=1, correct_answer="E", points=Decimal("1.00"))
+    response = SimpleNamespace(answer=None, detected_answer=None, detection_status="ambiguous",
+                               manual_correction_flag=False, correctness=None, question=question)
+    submission = SimpleNamespace(responses=[response])
+    apply_manual_correction(submission, response, "E")
+    assert response.answer == "E"
+    assert response.correctness is True
+    assert submission.score == Decimal("1.00")
+
+
 def test_factory_registers_routes_and_rejects_non_postgresql(monkeypatch):
     from app import create_app
     from config import config
@@ -237,6 +253,40 @@ def test_analytics_denominators_exclude_unknowns_and_empty_groups():
     assert "answers" not in sql
     assert "IS NOT NULL" in sql
     assert "CASE" in sql
+    assert "review_status" in sql
+    assert "answer_a" in sql
+
+
+def test_v3_upload_accepts_multiple_sheets_and_returns_each_review_link(monkeypatch):
+    from app import create_app
+    from config import config
+
+    monkeypatch.setattr(config["default"], "SQLALCHEMY_DATABASE_URI", "postgresql+psycopg://local:local@127.0.0.1/not_connected")
+    monkeypatch.setattr(config["default"], "SECRET_KEY", "factory-test-key")
+    app = create_app()
+    app.config["WTF_CSRF_ENABLED"] = False
+    client = app.test_client()
+    monkeypatch.setattr("routes.scanning_routes.db.session.scalars", lambda *_args, **_kwargs: SimpleNamespace(all=lambda: []))
+    assessment = SimpleNamespace(id=5, questions=[])
+    monkeypatch.setattr("routes.scanning_routes.db.session.get", lambda *_args, **_kwargs: assessment)
+    draft_ids = iter([100, 101])
+    monkeypatch.setattr(
+        "routes.scanning_routes.create_v3_scan_draft",
+        lambda *_args, **_kwargs: SimpleNamespace(id=next(draft_ids)),
+    )
+    page = client.get("/scanning/upload")
+    assert page.status_code == 200
+    assert b'multiple' in page.data
+    response = client.post("/scanning/upload", data={
+        "sheet_format": "paparazzi_standard_v3",
+        "assessment_id": "5",
+        "question_count": "20",
+        "answer_sheet": [(BytesIO(b"image-one"), "one.png"), (BytesIO(b"image-two"), "two.png")],
+    }, content_type="multipart/form-data")
+    assert response.status_code == 200
+    assert b"one.png" in response.data and b"two.png" in response.data
+    assert b"/scanning/v3-drafts/100" in response.data
+    assert b"/scanning/v3-drafts/101" in response.data
 
 
 def test_learning_resource_validation_requires_teacher_supplied_http_url():
@@ -245,3 +295,94 @@ def test_learning_resource_validation_requires_teacher_supplied_http_url():
     assert validate_resource_payload(valid) == (True, [])
     valid["url"] = "javascript:alert(1)"
     assert not validate_resource_payload(valid)[0]
+
+
+def test_legacy_image_entry_rejects_unknown_format():
+    from services.submission_service import process_answer_sheet_image
+
+    image = np.full((400, 400, 3), 255, dtype=np.uint8)
+    with pytest.raises(ValueError, match="Unsupported answer-sheet format"):
+        process_answer_sheet_image(image, {}, sheet_format="unknown")
+
+
+def test_upload_wrapper_uses_normalized_legacy_image_pipeline(monkeypatch):
+    from services import submission_service
+
+    image = np.full((400, 400, 3), 255, dtype=np.uint8)
+    calls = {}
+    monkeypatch.setattr(submission_service, "load_uploaded_image", lambda *_args, **_kwargs: (image, {}))
+
+    def process_image(normalized_image, app_config, *, sheet_format):
+        calls.update(image=normalized_image, app_config=app_config, sheet_format=sheet_format)
+        return "processed"
+
+    monkeypatch.setattr(submission_service, "process_answer_sheet_image", process_image)
+    assert submission_service.process_answer_sheet(object(), {"MAX_CONTENT_LENGTH": 1024, "MAX_IMAGE_DIMENSION": 2000}) == "processed"
+    assert calls == {
+        "image": image,
+        "app_config": {"MAX_CONTENT_LENGTH": 1024, "MAX_IMAGE_DIMENSION": 2000},
+        "sheet_format": "legacy_paparazzi",
+    }
+
+
+def test_paparazzi_branding_and_answer_sheet_route(monkeypatch):
+    from app import create_app
+    from config import config
+
+    monkeypatch.setattr(config["default"], "SQLALCHEMY_DATABASE_URI", "postgresql+psycopg://local:local@127.0.0.1/not_connected")
+    monkeypatch.setattr(config["default"], "SECRET_KEY", "factory-test-key")
+    app = create_app()
+    client = app.test_client()
+
+    dashboard = client.get("/")
+    assert dashboard.status_code == 200
+    assert b"Paparazzi" in dashboard.data
+
+    answer_sheet_page = client.get("/answer-sheets")
+    assert answer_sheet_page.status_code == 200
+    assert b"Answer Sheets" in answer_sheet_page.data
+    assert b"Paparazzi Standard V3" in answer_sheet_page.data
+    assert b"Answer_Sheet_20Q_V3.pdf" in answer_sheet_page.data
+    assert b"Answer_Sheet_50Q_V3.pdf" in answer_sheet_page.data
+    assert b"Answer_Sheet_100Q_V3.pdf" in answer_sheet_page.data
+    assert b"Answer_Sheets_20_50_100_V3.pdf" in answer_sheet_page.data
+    from pathlib import Path
+    asset_dir = Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "v3" / "Paparazzi_Answer_Sheets_V3_Package"
+    for filename in ("Answer_Sheet_20Q_V3.pdf", "Answer_Sheet_50Q_V3.pdf", "Answer_Sheet_100Q_V3.pdf", "Answer_Sheets_20_50_100_V3.pdf"):
+        served = client.get(f"/static/answer_sheets/v3/Paparazzi_Answer_Sheets_V3_Package/{filename}")
+        assert served.status_code == 200
+        assert served.data == (asset_dir / filename).read_bytes()
+    assert client.post("/answer-sheets").status_code == 405
+
+
+def test_v3_upload_routes_to_review_draft_not_legacy_scanner(monkeypatch):
+    from app import create_app
+    from config import config
+
+    monkeypatch.setattr(config["default"], "SQLALCHEMY_DATABASE_URI", "postgresql+psycopg://local:local@127.0.0.1/not_connected")
+    monkeypatch.setattr(config["default"], "SECRET_KEY", "factory-test-key")
+    app = create_app()
+    app.config["WTF_CSRF_ENABLED"] = False
+    client = app.test_client()
+    monkeypatch.setattr("routes.scanning_routes.db.session.scalars", lambda *_args, **_kwargs: SimpleNamespace(all=lambda: []))
+
+    page = client.get("/scanning/upload")
+    assert page.status_code == 200
+    assert b"Paparazzi Standard V3" in page.data
+    assert b'name="assessment_id"' in page.data
+    assert b'name="question_count"' in page.data
+    assert b'id="image-preview-container"' in page.data
+    assert b'id="answer-sheet-preview-list"' in page.data
+
+    assessment = SimpleNamespace(id=5, questions=[])
+    monkeypatch.setattr("routes.scanning_routes.db.session.get", lambda *_args, **_kwargs: assessment)
+    monkeypatch.setattr("routes.scanning_routes.create_v3_scan_draft", lambda *_args, **_kwargs: SimpleNamespace(id=99))
+    monkeypatch.setattr("routes.scanning_routes.process_answer_sheet", lambda *_args, **_kwargs: pytest.fail("V3 must not use legacy scanner"))
+    response = client.post("/scanning/upload", data={
+        "sheet_format": "paparazzi_standard_v3",
+        "assessment_id": "5",
+        "question_count": "20",
+        "answer_sheet": (BytesIO(b"image"), "sheet.png"),
+    })
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/scanning/v3-drafts/99")

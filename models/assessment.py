@@ -44,6 +44,7 @@ class Question(db.Model):
     option_b = db.Column(db.String(500), nullable=False, default="")
     option_c = db.Column(db.String(500), nullable=False, default="")
     option_d = db.Column(db.String(500), nullable=False, default="")
+    option_e = db.Column(db.String(500), nullable=False, default="")
     correct_answer = db.Column(db.String(1), nullable=False)
     points = db.Column(db.Numeric(8, 2), nullable=False, default=1.0)
     learning_objective = db.Column(db.String(255), nullable=False)
@@ -54,7 +55,7 @@ class Question(db.Model):
     __table_args__ = (
         UniqueConstraint("assessment_id", "question_number", name="uq_assessment_question_number"),
         CheckConstraint("question_number > 0", name="ck_question_number_positive"),
-        CheckConstraint("correct_answer IN ('A', 'B', 'C', 'D')", name="ck_question_answer_valid"),
+        CheckConstraint("correct_answer IN ('A', 'B', 'C', 'D', 'E')", name="ck_question_answer_valid"),
         CheckConstraint("points > 0", name="ck_question_points_positive"),
     )
 

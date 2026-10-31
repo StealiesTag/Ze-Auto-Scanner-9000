@@ -5,7 +5,7 @@ This project is a modular Flask application for automated answer-sheet scanning,
 ## Core goals
 
 - Manage students and assessments in PostgreSQL.
-- Generate printable answer sheets with QR codes and fiducial markers.
+- Serve the supplied Paparazzi Standard V3 PDF templates and scan profiles.
 - Upload, align, and validate scanned answer sheets.
 - Decode bubbles using OpenCV and NumPy.
 - Grade submissions and flag ambiguous cases for teacher review.
@@ -18,7 +18,7 @@ This project is a modular Flask application for automated answer-sheet scanning,
 - `config.py`: configuration and environment loading.
 - `models/`: SQLAlchemy models for students, assessments, submissions, responses, and learning resources.
 - `routes/`: Blueprints for dashboard, students, assessments, uploads, and analytics.
-- `services/`: image processing, OMR, grading, recommendation, and sheet-generation helpers.
+- `services/`: image processing, OMR, grading, recommendation, and scanning support.
 - `templates/`: HTML pages for the teacher dashboard and management sections.
 - `static/`: CSS and JavaScript assets.
 - `uploads/`: server-side image storage.
@@ -26,9 +26,9 @@ This project is a modular Flask application for automated answer-sheet scanning,
 
 ## MVP status
 
-The local MVP supports student records and CSV import, assessment and answer-key editing, A4 sheet generation, QR and ArUco identification, perspective alignment, bubble recognition, weighted grading, PostgreSQL submission persistence, teacher correction history, and class analytics with configured-resource recommendations.
+The local MVP supports student records and CSV import, assessment and answer-key editing, Paparazzi Standard V3 sheet downloads and staged OMR review, PostgreSQL submission persistence, teacher correction history, and class analytics with configured-resource recommendations. V3 templates and their source JSON profile are stored unchanged under `static/answer_sheets/v3/`; measured vector origins are in a separate addendum. Recognition is validated on PDF-derived synthetic images, while physical print/camera validation remains outstanding. See [docs/paparazzi-standard-v3.md](docs/paparazzi-standard-v3.md) for geometry, migration, and validation status.
 
-The Flask factory registers models before Flask-Migrate inspects metadata. PostgreSQL via Psycopg 3 is required; SQLite is rejected. The included initial Alembic revision is `20261026_0001`. No migration history existed in the scaffold before it was added, so inspect and back up any pre-existing database before applying this revision.
+The Flask factory registers models before Flask-Migrate inspects metadata. PostgreSQL via Psycopg 3 is required; SQLite is rejected. Alembic revisions are `20261026_0001` and `20261101_0002`; the latter adds optional choice E and V3 scan drafts without changing existing answer data. Back up any existing database before applying migrations.
 
 This is a local, single-teacher MVP. It does not include authentication, production deployment safeguards, ESP32/Canvas integration, handwriting recognition, or written-answer grading.
 
@@ -122,7 +122,7 @@ Database integration tests are skipped when `TEST_DATABASE_URL` is not configure
 
 ## Synthetic verification
 
-The automated suite creates synthetic ArUco pages, QR codes, and marked bubbles in memory. These verify QR decoding, marker alignment under rotation/perspective, OMR states, brightness tolerance, PDF output, and grading. A real printer and camera were not available for physical-sheet verification.
+Automated tests render the supplied V3 PDFs and verify their page boxes, registration marks, profile-derived bubble centers, student ID grid, and synthetic answer extraction for all three templates. The legacy ArUco/QR pipeline remains separately tested. Physical printed sheets and camera captures still need validation.
 
 To verify migration output without a PostgreSQL server, set `DATABASE_URL` and run `python -m flask --app app db upgrade --sql`. This prints SQL only and does not modify a database.
 
@@ -136,7 +136,7 @@ Student records and submitted answer sheets are sensitive educational data. Hand
 
 - The code avoids string concatenation when interacting with SQL; all database operations use the ORM layer.
 - Uploaded filenames are not trusted and should be safely renamed server-side before storage.
-- Generated sheets use an A4 coordinate system in millimeters measured from the page's top-left. The canonical processing image is 1240 by 1754 pixels. ArUco IDs 0-3 are 15 mm squares at the four corners; bubble centers are at X=82, 108, 134, and 160 mm, with question rows starting at Y=97 mm at 5.2 mm spacing. The same constants are defined in `services/sheet_layout.py` and used by both PDF generation and OMR.
+- The ArUco alignment, QR identity, fixed A4 transform, and four-choice OMR belong only to the legacy sheet workflow. Paparazzi Standard V3 uses a separate profile-driven square-mark detector and A–E grid.
 - Blank responses earn zero and count as unanswered. Multiple marks and ambiguous readings earn no points and keep the submission in review. A teacher can correct the answer or explicitly finalize a review while leaving uncertain responses ungraded.
 - The default bubble threshold is a 0.18 dark-pixel ratio with a 0.10 runner-up margin; tune using actual printer and camera samples before relying on grades.
 - Learning-resource recommendations are rule-based and transparent; they highlight possible learning gaps rather than proving that a student lacks a skill.
@@ -145,7 +145,7 @@ Student records and submitted answer sheets are sensitive educational data. Hand
 ## Why the architecture is split this way
 
 - `models/` keeps schema definitions understandable and reviewable.
-- `services/` isolates logic for grading, image analysis, generation, and recommendation.
+- `services/` isolates logic for grading, image analysis, and recommendation.
 - `routes/` handles HTTP responsibilities and keeps templates thin.
 - `templates/` and `static/` separate presentation from behavior.
 - `tests/` keeps synthetic processing tests independent of PostgreSQL and marks database integration tests as skipped when no dedicated PostgreSQL test database is available.

@@ -1,4 +1,4 @@
-"""Shared top-left-origin A4 geometry for PDF generation and image processing."""
+"""Legacy Paparazzi ArUco/QR geometry used by the existing upload scanner."""
 
 PAGE_WIDTH_MM = 210.0
 PAGE_HEIGHT_MM = 297.0

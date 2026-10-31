@@ -7,22 +7,23 @@
 </section>
 <section class="stats-grid">
   <div class="stat-box"><span class="label">Students</span><strong>{{ analytics.students }}</strong></div>
+  <div class="stat-box"><span class="label">Students assessed</span><strong>{{ analytics.students_assessed }}</strong></div>
   <div class="stat-box"><span class="label">Processed submissions</span><strong>{{ analytics.submissions }}</strong></div>
   <div class="stat-box"><span class="label">Scored, finalized submissions</span><strong>{{ analytics.scored_submissions }}</strong></div>
   <div class="stat-box"><span class="label">Awaiting review</span><strong>{{ analytics.awaiting_review }}</strong></div>
 </section>
 <div class="row g-3 mt-1">
-  <section class="col-lg-6"><div class="card h-100"><h2>Score summary</h2><p>Average: <strong>{{ '%.1f'|format(analytics.average_score) if analytics.average_score is not none else '—' }}%</strong> · Median: <strong>{{ '%.1f'|format(analytics.median_score) if analytics.median_score is not none else '—' }}%</strong></p><p class="small text-muted">Only processed submissions with review complete or not required are included.</p>
+  <section class="col-lg-6"><div class="card h-100"><h2>Score summary</h2><p>Average: <strong>{{ '%.1f'|format(analytics.average_score) if analytics.average_score is not none else '—' }}%</strong> · Highest: <strong>{{ '%.1f'|format(analytics.highest_score) if analytics.highest_score is not none else '—' }}%</strong> · Lowest: <strong>{{ '%.1f'|format(analytics.lowest_score) if analytics.lowest_score is not none else '—' }}%</strong> · Median: <strong>{{ '%.1f'|format(analytics.median_score) if analytics.median_score is not none else '—' }}%</strong></p><p class="small text-muted">Only processed submissions with review complete or not required are included.</p>
     {% for label in ['0-49','50-59','60-69','70-79','80-89','90-100'] %}<div class="distribution-row"><span>{{ label }}%</span><div class="progress flex-grow-1"><div class="progress-bar" style="width: {{ (analytics.score_distribution.get(label, 0) / analytics.scored_submissions * 100) if analytics.scored_submissions else 0 }}%"></div></div><span>{{ analytics.score_distribution.get(label, 0) }}</span></div>{% endfor %}
   </div></section>
   <section class="col-lg-6"><div class="card h-100"><h2>Most missed questions</h2><div class="table-responsive"><table class="table"><thead><tr><th>Question</th><th>Correct rate</th><th>Valid responses</th></tr></thead><tbody>
     {% for item in analytics.most_missed[:8] %}<tr><td>{{ item.assessment_title }} · Q{{ item.question_number }}</td><td>{{ '%.1f'|format(item.accuracy * 100) }}%</td><td>{{ item.valid_responses }}</td></tr>{% else %}<tr><td colspan="3" class="text-muted">No valid response data yet.</td></tr>{% endfor %}
   </tbody></table></div></div></section>
 </div>
-<section class="card mt-3"><h2>Question accuracy</h2><div class="table-responsive"><table class="table"><thead><tr><th>Assessment</th><th>Question</th><th>Correct rate</th><th>Valid responses</th><th>Correct</th></tr></thead><tbody>
-  {% for item in analytics.questions %}<tr><td>{{ item.assessment_title }}</td><td>Q{{ item.question_number }}</td><td>{{ '%.1f'|format(item.accuracy * 100) if item.accuracy is not none else '—' }}</td><td>{{ item.valid_responses }}</td><td>{{ item.correct }}</td></tr>
-  {% else %}<tr><td colspan="5" class="text-muted">No questions match this filter.</td></tr>{% endfor %}
-</tbody></table></div><p class="small text-muted mb-0">Blank and unresolved responses are excluded; the valid-response count is shown for each question.</p></section>
+<section class="card mt-3"><h2>Question results</h2><div class="table-responsive"><table class="table"><thead><tr><th>Assessment</th><th>Question</th><th>Correct rate</th><th>Valid responses</th><th>Correct</th><th>Incorrect</th><th>Blank</th><th>Choices A-E</th></tr></thead><tbody>
+  {% for item in analytics.questions %}<tr><td>{{ item.assessment_title }}</td><td>Q{{ item.question_number }}</td><td>{{ '%.1f'|format(item.accuracy * 100) if item.accuracy is not none else '—' }}%</td><td>{{ item.valid_responses }}</td><td>{{ item.correct }}</td><td>{{ item.incorrect }}</td><td>{{ item.blank }}</td><td>{% for option in ['A','B','C','D','E'] %}<span class="me-2">{{ option }}: {{ item.answer_distribution[option] }}</span>{% endfor %}</td></tr>
+  {% else %}<tr><td colspan="8" class="text-muted">No questions match this filter.</td></tr>{% endfor %}
+</tbody></table></div><p class="small text-muted mb-0">Only finalized submissions are included. The valid-response count excludes blanks and unresolved answers.</p></section>
 <section class="card"><h2>Learning-objective performance</h2><div class="table-responsive"><table class="table"><thead><tr><th>Objective</th><th>Incorrect rate</th><th>Valid responses</th><th>Incorrect</th></tr></thead><tbody>
   {% for objective, stats in analytics.objectives.items() %}<tr><td>{{ objective }}</td><td>{{ '%.1f'|format(stats.incorrect / stats.valid_responses * 100) if stats.valid_responses else '—' }}%</td><td>{{ stats.valid_responses }}</td><td>{{ stats.incorrect }}</td></tr>
   {% else %}<tr><td colspan="4" class="text-muted">No valid objective responses yet.</td></tr>{% endfor %}

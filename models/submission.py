@@ -80,8 +80,8 @@ class Response(db.Model):
 
     __table_args__ = (
         UniqueConstraint("submission_id", "question_id", name="uq_submission_question_response"),
-        CheckConstraint("detected_answer IS NULL OR detected_answer IN ('A', 'B', 'C', 'D')", name="ck_response_detected_answer_valid"),
-        CheckConstraint("answer IS NULL OR answer IN ('A', 'B', 'C', 'D')", name="ck_response_answer_valid"),
+        CheckConstraint("detected_answer IS NULL OR detected_answer IN ('A', 'B', 'C', 'D', 'E')", name="ck_response_detected_answer_valid"),
+        CheckConstraint("answer IS NULL OR answer IN ('A', 'B', 'C', 'D', 'E')", name="ck_response_answer_valid"),
         CheckConstraint("detection_status IN ('detected', 'blank', 'multiple_marks', 'ambiguous')", name="ck_response_detection_status"),
         CheckConstraint("confidence >= 0 AND confidence <= 1", name="ck_response_confidence_range"),
     )
@@ -103,6 +103,6 @@ class AnswerCorrection(db.Model):
     response = db.relationship("Response", back_populates="corrections")
 
     __table_args__ = (
-        CheckConstraint("previous_answer IS NULL OR previous_answer IN ('A', 'B', 'C', 'D')", name="ck_correction_previous_answer"),
-        CheckConstraint("corrected_answer IS NULL OR corrected_answer IN ('A', 'B', 'C', 'D')", name="ck_correction_answer"),
+        CheckConstraint("previous_answer IS NULL OR previous_answer IN ('A', 'B', 'C', 'D', 'E')", name="ck_correction_previous_answer"),
+        CheckConstraint("corrected_answer IS NULL OR corrected_answer IN ('A', 'B', 'C', 'D', 'E')", name="ck_correction_answer"),
     )

@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 from extensions import db
 from models import Assessment, Question
 
-ASSESSMENT_QUESTION_LIMIT = 32
+ASSESSMENT_QUESTION_LIMIT = 100
 
 
 def validate_assessment_payload(payload: dict) -> tuple[bool, list[str]]:
@@ -25,7 +25,7 @@ def validate_assessment_payload(payload: dict) -> tuple[bool, list[str]]:
     if len(title) > 200 or len(subject) > 100 or len(class_section) > 100:
         errors.append("Assessment title, subject, or class section exceeds its allowed length.")
     if len(questions) > ASSESSMENT_QUESTION_LIMIT:
-        errors.append(f"An assessment can contain at most {ASSESSMENT_QUESTION_LIMIT} questions on one A4 sheet.")
+        errors.append(f"The current Paparazzi assessment format supports at most {ASSESSMENT_QUESTION_LIMIT} questions.")
 
     for index, question in enumerate(questions, start=1):
         answer = (question.get("correct_answer") or "").strip().upper()
@@ -35,9 +35,11 @@ def validate_assessment_payload(payload: dict) -> tuple[bool, list[str]]:
             points = Decimal("0")
         objective = (question.get("learning_objective") or "").strip()
         prompt = (question.get("prompt") or "").strip()
-        options = [(question.get(f"option_{option.lower()}") or "").strip() for option in "ABCD"]
-        if answer not in {"A", "B", "C", "D"}:
+        options = [(question.get(f"option_{option.lower()}") or "").strip() for option in "ABCDE"]
+        if answer not in {"A", "B", "C", "D", "E"}:
             errors.append(f"Question {index} has an invalid answer key.")
+        if answer == "E" and not options[4]:
+            errors.append(f"Question {index} cannot use answer E without choice E text.")
         if not points.is_finite() or points <= 0 or points > 999999 or points.as_tuple().exponent < -2:
             errors.append(f"Question {index} must have a positive point value with at most two decimals.")
         if not objective:
@@ -48,7 +50,7 @@ def validate_assessment_payload(payload: dict) -> tuple[bool, list[str]]:
             errors.append(f"Question {index} must include a prompt.")
         if len(prompt) > 2000 or any(len(option) > 500 for option in options):
             errors.append(f"Question {index} prompt or choice exceeds its allowed length.")
-        if any(not option for option in options):
+        if any(not option for option in options[:4]):
             errors.append(f"Question {index} must include choices A, B, C, and D.")
     return not errors, errors
 
@@ -67,7 +69,7 @@ def create_assessment(payload: dict) -> Assessment:
         Question(question_number=index, correct_answer=row["correct_answer"].strip().upper(),
                  points=Decimal(str(row.get("points", 1))), learning_objective=row["learning_objective"].strip(),
                  prompt=row["prompt"].strip(), option_a=row["option_a"].strip(), option_b=row["option_b"].strip(),
-                 option_c=row["option_c"].strip(), option_d=row["option_d"].strip())
+                 option_c=row["option_c"].strip(), option_d=row["option_d"].strip(), option_e=row.get("option_e", "").strip())
         for index, row in enumerate(payload["questions"], start=1)
     ]
     db.session.add(assessment)
@@ -89,7 +91,7 @@ def update_assessment(assessment: Assessment, payload: dict) -> Assessment:
         Question(question_number=index, correct_answer=row["correct_answer"].strip().upper(),
                  points=Decimal(str(row.get("points", 1))), learning_objective=row["learning_objective"].strip(),
                  prompt=row["prompt"].strip(), option_a=row["option_a"].strip(), option_b=row["option_b"].strip(),
-                 option_c=row["option_c"].strip(), option_d=row["option_d"].strip())
+                 option_c=row["option_c"].strip(), option_d=row["option_d"].strip(), option_e=row.get("option_e", "").strip())
         for index, row in enumerate(payload["questions"], start=1)
     )
     assessment.total_questions = len(payload["questions"])
@@ -100,16 +102,18 @@ def update_assessment(assessment: Assessment, payload: dict) -> Assessment:
 def parse_assessment_form(form) -> dict:
     questions = []
     fields = [form.getlist(name) for name in (
-        "prompt", "option_a", "option_b", "option_c", "option_d", "correct_answer", "points", "learning_objective"
+        "prompt", "option_a", "option_b", "option_c", "option_d", "option_e", "correct_answer", "points", "learning_objective"
     )]
+    if not fields[5]:
+        fields[5] = [""] * len(fields[0])
     if len({len(values) for values in fields}) != 1:
         return {"title": form.get("title", ""), "subject": form.get("subject", ""),
                 "class_section": form.get("class_section", ""), "questions": [{}]}
     for values in zip(*fields):
-        prompt, option_a, option_b, option_c, option_d, answer, points, objective = values
+        prompt, option_a, option_b, option_c, option_d, option_e, answer, points, objective = values
         if any(value.strip() for value in values):
             questions.append({"prompt": prompt, "option_a": option_a, "option_b": option_b, "option_c": option_c,
-                              "option_d": option_d, "correct_answer": answer, "points": points,
+                              "option_d": option_d, "option_e": option_e, "correct_answer": answer, "points": points,
                               "learning_objective": objective})
     return {"title": form.get("title", ""), "subject": form.get("subject", ""),
             "class_section": form.get("class_section", ""), "questions": questions}

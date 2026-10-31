@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import cv2
+import numpy as np
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -21,6 +22,12 @@ class DuplicateSubmissionError(ValueError):
     def __init__(self, submission_id: int):
         super().__init__("A submission for this student and assessment already exists; existing grades were not changed.")
         self.submission_id = submission_id
+
+
+def make_qr_payload(student_id: int, assessment_id: int) -> str:
+    if student_id <= 0 or assessment_id <= 0:
+        raise ValueError("Student and assessment identifiers must be positive.")
+    return json.dumps({"s": student_id, "a": assessment_id}, separators=(",", ":"))
 
 
 def parse_qr_identity(payload: str) -> tuple[int, int]:
@@ -49,6 +56,13 @@ def process_answer_sheet(file_storage, app_config) -> Submission:
         max_bytes=int(app_config["MAX_CONTENT_LENGTH"]),
         max_dimension=int(app_config["MAX_IMAGE_DIMENSION"]),
     )
+    return process_answer_sheet_image(image, app_config, sheet_format="legacy_paparazzi")
+
+
+def process_answer_sheet_image(image: np.ndarray, app_config, *, sheet_format: str = "legacy_paparazzi") -> Submission:
+    if sheet_format != "legacy_paparazzi":
+        raise ValueError("Unsupported answer-sheet format.")
+
     alignment = align_sheet(image)
     student_id, assessment_id = parse_qr_identity(decode_qr(alignment.aligned_image))
     student = db.session.get(Student, student_id)

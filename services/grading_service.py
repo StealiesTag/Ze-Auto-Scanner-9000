@@ -47,8 +47,8 @@ def grade_detections(questions, detections: list[dict]) -> dict:
 
 
 def apply_manual_correction(submission, response, answer: str | None) -> str | None:
-    if answer not in {None, "A", "B", "C", "D"}:
-        raise ValueError("A correction must be A, B, C, D, or blank.")
+    if answer not in {None, "A", "B", "C", "D", "E"}:
+        raise ValueError("A correction must be A, B, C, D, E, or blank.")
     previous_answer = response.answer
     response.answer = answer
     response.manual_correction_flag = True

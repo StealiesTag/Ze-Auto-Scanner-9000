@@ -1,0 +1,56 @@
+{% extends 'base.html' %}
+{% block title %}Review V3 scan{% endblock %}
+{% block content %}
+<section class="card">
+  <p class="eyebrow">PAPARAZZI STANDARD V3 · REVIEW</p>
+  <h1>Review detected sheet</h1>
+  <p class="text-muted">{{ draft.assessment.title }} · {{ draft.question_count }} questions · profile {{ draft.profile_version }}</p>
+  {% if draft.processing_notes.get('warnings') %}<div class="alert alert-warning">{{ draft.processing_notes.get('warnings')|join(' ') }}</div>{% endif %}
+  {% if draft.processing_notes.get('blur_score', 0) < 18 %}<div class="alert alert-warning">The scan may be blurred. Check every answer before grading.</div>{% endif %}
+  <dl class="row">
+    <dt class="col-sm-3">Detected student ID</dt><dd class="col-sm-9">{{ draft.detected_student_number or 'Not confidently read' }} · {{ draft.student_id_detection.status|replace('_',' ') }}</dd>
+    <dt class="col-sm-3">Assessment</dt><dd class="col-sm-9">{{ draft.assessment.title }} ({{ draft.assessment.questions|length }} questions)</dd>
+    <dt class="col-sm-3">Orientation</dt><dd class="col-sm-9">{{ draft.processing_notes.get('orientation') }}</dd>
+  </dl>
+</section>
+<section class="row g-3 mb-3">
+  {% for kind, label in [('original','Original upload'),('aligned','Perspective-corrected page'),('debug','Bubble diagnostics')] %}
+  <div class="col-lg-4"><article class="card h-100"><h2>{{ label }}</h2><a href="{{ url_for('scanning.v3_draft_image', draft_id=draft.id, kind=kind) }}" target="_blank" rel="noopener"><img class="scan-preview" src="{{ url_for('scanning.v3_draft_image', draft_id=draft.id, kind=kind) }}" alt="{{ label }} for V3 scan {{ draft.id }}"></a></article></div>
+  {% endfor %}
+</section>
+<section class="card">
+  <h2>Confirm student and answers</h2>
+  <form method="post" action="{{ url_for('scanning.confirm_v3_draft', draft_id=draft.id) }}" class="vstack gap-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div>
+      <label class="form-label" for="student_id">Student</label>
+      <select class="form-select" id="student_id" name="student_id" required>
+        <option value="">Select the correct student</option>
+        {% for student in students %}
+        <option value="{{ student.id }}" {% if draft.student_id == student.id %}selected{% endif %}>{{ student.name }} · {{ student.student_number }} · {{ student.class_section }}</option>
+        {% endfor %}
+      </select>
+      <div class="form-text">An ID is matched only when all seven digits are confidently read and belong to this assessment's class.</div>
+    </div>
+    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Question</th><th>Detected</th><th>Confidence</th><th>Final answer</th></tr></thead><tbody>
+      {% for item in draft.recognized_answers %}
+      <tr>
+        <td>Q{{ item.question_number }}</td>
+        <td>{{ item.answer or '—' }} <span class="badge {{ 'text-bg-success' if item.status == 'detected' else 'text-bg-warning' }}">{{ item.status|replace('_',' ') }}</span></td>
+        <td>{{ '%.2f'|format(item.confidence) }}</td>
+        <td>
+          <select class="form-select" name="answer" aria-label="Final answer for question {{ item.question_number }}" required>
+            <option value="" disabled {% if item.status not in ['detected','blank'] %}selected{% endif %}>Review and select</option>
+            <option value="__blank__" {% if item.status == 'blank' %}selected{% endif %}>Blank / no mark</option>
+            {% for option in ['A','B','C','D','E'] %}<option value="{{ option }}" {% if item.status == 'detected' and item.answer == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+          </select>
+          {% if item.status in ['multiple_marks','ambiguous'] %}<div class="small text-warning mt-1">Bubble values: {% for option, value in item.values.items() %}{{ option }} {{ '%.2f'|format(value) }}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody></table></div>
+    <label class="form-check"><input class="form-check-input" type="checkbox" name="confirm_v3" value="yes" required><span class="form-check-label">I reviewed the student and every final answer. Grade and save this submission.</span></label>
+    <button class="btn btn-primary">Confirm and grade</button>
+  </form>
+</section>
+{% endblock %}

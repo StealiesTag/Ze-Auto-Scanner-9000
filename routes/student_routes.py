@@ -3,14 +3,14 @@ from sqlalchemy import select
 
 from extensions import db
 from models import Student, Submission
-from services.student_service import create_student, import_students_from_csv, list_students, update_student
+from services.student_service import create_student, import_students_from_csv, list_students as get_students, update_student
 
 student_bp = Blueprint("student", __name__, url_prefix="/students")
 
 
 @student_bp.route("")
 def list_students():
-    return render_template("students.html", students=list_students(request.args.get("q", "")), search=request.args.get("q", ""))
+    return render_template("students.html", students=get_students(request.args.get("q", "")), search=request.args.get("q", ""))
 
 
 @student_bp.route("/new", methods=["GET", "POST"])
