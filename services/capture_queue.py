@@ -36,8 +36,8 @@ def get_scanner_control() -> ScannerControl:
     return control
 
 
-def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, app_config: dict, *, source: str = "esp32", capture_id: str | None = None) -> CaptureJob:
-    if source not in {"esp32", "manual"} or extension not in {".jpg", ".jpeg", ".png"}:
+def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, app_config: dict, *, source: str = "esp32", capture_id: str | None = None, camera_id: str | None = None, captured_at: datetime | None = None, detection_metadata: dict | None = None, commit: bool = True) -> CaptureJob:
+    if source not in {"esp32", "manual", "api"} or extension not in {".jpg", ".jpeg", ".png"}:
         raise ValueError("Invalid capture source or image type.")
     image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None or image.shape[0] < 400 or image.shape[1] < 400 or max(image.shape[:2]) > int(app_config["MAX_IMAGE_DIMENSION"]):
@@ -48,8 +48,8 @@ def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, ap
     if assessment is None or assessment.total_questions not in {20, 50, 100}:
         raise ValueError("Select an existing 20, 50, or 100 question assessment.")
     capture_id = capture_id or uuid.uuid4().hex
-    if not re.fullmatch(r"[a-fA-F0-9-]{16,64}", capture_id):
-        raise ValueError("Capture identifiers must be 16-64 hexadecimal or hyphen characters.")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", capture_id):
+        raise ValueError("Capture identifiers may contain 1-64 letters, digits, hyphens, or underscores.")
     folder = Path(app_config["UPLOAD_FOLDER"]).resolve()
     folder.mkdir(parents=True, exist_ok=True)
     filename = f"capture-{capture_id}{extension}"
@@ -63,9 +63,14 @@ def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, ap
         pending = db.session.scalar(select(func.count(CaptureJob.id)).where(CaptureJob.status.in_(PENDING_STATUSES))) or 0
         if pending >= int(app_config["CAPTURE_QUEUE_CAPACITY"]):
             raise QueueFullError("The capture queue is full. Automatic capture was paused; process queued sheets before resuming.")
-        job = CaptureJob(capture_id=capture_id, assessment_id=assessment_id, image_filename=filename, source=source, status="QUEUED")
+        job = CaptureJob(
+            capture_id=capture_id, assessment_id=assessment_id, image_filename=filename,
+            source=source, status="QUEUED", camera_id=camera_id,
+            captured_at=captured_at, detection_metadata=detection_metadata or {},
+        )
         db.session.add(job)
-        db.session.commit()
+        if commit:
+            db.session.commit()
         return job
     except Exception:
         db.session.rollback()

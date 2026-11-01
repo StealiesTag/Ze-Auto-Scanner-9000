@@ -7,7 +7,7 @@
     <h1>Automatic scanning</h1>
     <p class="text-muted">The live MJPEG feed is used for marker and sheet-transition checks. A separate high-resolution still is captured only after a stable replacement event.</p>
     {% if migration_pending %}
-    <div class="alert alert-warning">Automatic scanning storage is not installed. Review and apply Alembic migrations through <code>20261101_0004</code> before using this page. Manual image upload remains available.</div>
+    <div class="alert alert-warning">Automatic scanning storage is not installed. Review and apply Alembic migrations through <code>20261101_0006</code> before using camera polling. Manual image upload remains available.</div>
     {% else %}
     <div class="row g-3">
       <div class="col-lg-8">
@@ -32,6 +32,47 @@
     {% endif %}
   </section>
   {% if not migration_pending %}
+  <section class="card" id="camera-poller-panel">
+    <p class="eyebrow">CAMERAWEBSERVER JPEG POLLING</p>
+    <h2>Camera source</h2>
+    <dl class="row small">
+      <dt class="col-sm-3">Configured URL</dt><dd class="col-sm-9"><code id="poller-url">{{ camera_url or 'Not configured' }}</code></dd>
+      <dt class="col-sm-3">Camera ID</dt><dd class="col-sm-9" id="poller-camera-id">{{ camera_id }}</dd>
+      <dt class="col-sm-3">Polling interval</dt><dd class="col-sm-9">{{ config.get('PAPARAZZI_CAMERA_POLL_INTERVAL', 1) }} seconds</dd>
+      <dt class="col-sm-3">Poller</dt><dd class="col-sm-9" id="poller-running">{{ 'Running' if poller and poller.poller_running else 'Stopped' }}</dd>
+      <dt class="col-sm-3">Camera connection</dt><dd class="col-sm-9" id="poller-connection">{{ poller.connection_status if poller else 'stopped' }}</dd>
+      <dt class="col-sm-3">Last successful fetch</dt><dd class="col-sm-9" id="poller-last-fetch">{{ poller.last_fetch_at.isoformat() if poller and poller.last_fetch_at else '—' }}</dd>
+      <dt class="col-sm-3">Last error</dt><dd class="col-sm-9 text-danger" id="poller-last-error">{{ poller.last_error if poller and poller.last_error else '—' }}</dd>
+    </dl>
+    <div class="stats-grid">
+      <div class="stat-box"><span class="label">Frames fetched</span><strong id="poller-frames">{{ poller.frames_fetched if poller else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Accepted</span><strong id="poller-accepted">{{ poller.accepted_count if poller else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Rejected</span><strong id="poller-rejected">{{ poller.rejected_count if poller else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Duplicates</span><strong id="poller-duplicates">{{ poller.duplicate_count if poller else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Deferred</span><strong id="poller-deferred">{{ poller.deferred_count if poller else 0 }}</strong></div>
+    </div>
+    {% if camera_control_configured %}
+    <div class="d-flex gap-2 mt-3">
+      <form method="post" action="{{ url_for('automatic_scanning.start_poller') }}" class="d-flex gap-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="form-label mb-0">V3 assessment<select class="form-select" name="assessment_id" required>
+          <option value="">Select 20, 50, or 100 question assessment</option>
+          {% for item in assessments %}<option value="{{ item.id }}" {% if selected_assessment == item.id %}selected{% endif %}>{{ item.title }} · {{ item.total_questions }} questions</option>{% endfor %}
+        </select></label>
+        <label class="form-label mb-0">Control token<input class="form-control" type="password" name="camera_control_token" autocomplete="current-password" required></label>
+        <button class="btn btn-primary" {% if not camera_url or (poller and poller.polling_enabled) %}disabled{% endif %}>Start polling</button>
+      </form>
+      <form method="post" action="{{ url_for('automatic_scanning.stop_poller') }}" class="d-flex gap-2 align-items-end">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="form-label mb-0">Control token<input class="form-control" type="password" name="camera_control_token" autocomplete="current-password" required></label>
+        <button class="btn btn-outline-danger" {% if not poller or not poller.polling_enabled %}disabled{% endif %}>Stop polling</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="alert alert-warning mb-0">Set <code>CAMERA_CONTROL_TOKEN</code> on the server to enable authorized start and stop controls.</p>
+    {% endif %}
+    <p class="small text-muted mt-3 mb-0">The poller fetches JPEGs from the server-configured local camera URL. It runs as a separate process; no browser-supplied URL is accepted.</p>
+  </section>
   <section class="card">
     <h2>Capture controls</h2>
     <form method="post" action="{{ url_for('automatic_scanning.start') }}" class="row g-2 align-items-end">
@@ -55,6 +96,17 @@
       </form>
     </div>
     <p class="small text-muted mt-3 mb-0">The Flask server and the single consumer worker are separate processes. Start the worker with <code>python -m services.scan_worker</code>. When the queue reaches its limit, auto capture pauses before requesting another still.</p>
+  </section>
+  <section class="card">
+    <h2>Camera image ingestion</h2>
+    <p class="small text-muted">API images are checked for V3 registration geometry before accepted images enter the queue.</p>
+    <div class="stats-grid">
+      <div class="stat-box"><span class="label">Received</span><strong id="ingest-received">0</strong></div>
+      <div class="stat-box"><span class="label">Rejected</span><strong id="ingest-rejected">0</strong></div>
+      <div class="stat-box"><span class="label">Accepted</span><strong id="ingest-accepted">0</strong></div>
+      <div class="stat-box"><span class="label">Duplicates ignored</span><strong id="ingest-duplicates">0</strong></div>
+      <div class="stat-box"><span class="label">Last image received</span><strong id="ingest-last-received">—</strong></div>
+    </div>
   </section>
   <section class="card">
     <h2>Processing queue</h2>

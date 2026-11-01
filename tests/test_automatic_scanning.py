@@ -1,13 +1,14 @@
 from pathlib import Path
+from io import BytesIO
 
 import cv2
 import numpy as np
 import pymupdf
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from extensions import db
-from models import Assessment, CaptureJob, Question, Student
+from models import Assessment, CameraIngestionState, CaptureJob, Question, ScannerControl, Student
 from services.capture_queue import (
     QueueFullError,
     claim_next_job,
@@ -19,6 +20,8 @@ from services.capture_queue import (
 )
 from services.capture_state_machine import CaptureState, CaptureStateMachine
 from services.marker_detection import detect_v3_registration_markers
+from services.camera_image_validation import validate_camera_image
+from services.camera_ingestion import IngestionResult
 from services.esp32_camera import CameraError, ESP32Camera
 from services.paparazzi_v3_submission_service import confirm_v3_scan_draft
 from services.paparazzi_v3_scanner import (
@@ -414,3 +417,399 @@ def test_start_pause_and_resume_controls_are_persisted(app):
     assert client.get("/scanning/automatic/status").get_json()["paused"] is False
     assert client.post("/scanning/automatic/stop").status_code == 302
     assert client.get("/scanning/automatic/status").get_json()["active"] is False
+
+
+def _api_assessment():
+    assessment = Assessment(title="API ingestion assessment", subject="Science", class_section="API", total_questions=20)
+    assessment.questions = [
+        Question(question_number=number, prompt=f"Q{number}", option_a="A", option_b="B", option_c="C", option_d="D", option_e="E", correct_answer="A", points=1, learning_objective="API")
+        for number in range(1, 21)
+    ]
+    db.session.add(assessment)
+    db.session.flush()
+    db.session.add(ScannerControl(id=1, assessment_id=assessment.id))
+    db.session.commit()
+    return assessment
+
+
+def _api_validation(signature, *, valid=True, bottom=True):
+    return {
+        "valid": valid, "reason": None if valid else "registration_markers_not_found",
+        "detected_markers": 4 if valid else 0,
+        "marker_coordinates": ({"top_left": [100.0, 100.0], "top_right": [500.0, 100.0], "bottom_right": [500.0, 700.0], "bottom_left": [100.0, 700.0]} if valid else {}),
+        "geometry_valid": valid, "confidence": 0.98 if valid else 0.0,
+        "bottom_markers_visible": valid and bottom, "sheet_sufficiently_visible": valid,
+        "page_signature": signature if valid else None, "extension": ".png",
+    }
+
+
+def test_camera_ingest_rejects_invalid_image_and_does_not_create_job(app, client, monkeypatch, tmp_path):
+    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    _api_assessment()
+    image = _blank_png()
+    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_: _api_validation(None, valid=False))
+    response = client.post("/api/camera/ingest", data=image, content_type="image/png", headers={"X-Camera-ID": "test-camera"})
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "rejected"
+    assert db.session.query(CaptureJob).count() == 0
+    state = db.session.get(CameraIngestionState, "test-camera")
+    assert state.received_count == 1 and state.rejected_count == 1
+
+
+def test_camera_ingest_persists_replacement_state_and_queues_one_per_sheet(app, client, monkeypatch, tmp_path):
+    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["CAMERA_STABLE_FRAME_COUNT"] = 2
+    app.config["CAMERA_BOTTOM_MISSING_FRAME_COUNT"] = 2
+    _api_assessment()
+    image = _blank_png()
+    next_image_array = np.full((600, 600, 3), 245, dtype=np.uint8)
+    next_ok, next_encoded = cv2.imencode(".png", next_image_array)
+    assert next_ok
+    next_image = next_encoded.tobytes()
+    first_signature, next_signature = [0] * 1440, [1] * 1440
+
+    def validate(payload, *_):
+        return _api_validation(first_signature if payload == image else next_signature)
+
+    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", validate)
+
+    def ingest(capture_id, payload=image):
+        return client.post(
+            "/api/camera/ingest", data=payload, content_type="image/png",
+            headers={"X-Camera-ID": "test-camera", "X-Capture-ID": capture_id},
+        )
+
+    assert ingest("frame-1").get_json()["status"] == "deferred"
+    assert ingest("frame-2").get_json()["status"] == "deferred"
+    first = ingest("frame-3")
+    assert first.status_code == 202 and first.get_json()["status"] == "queued"
+    assert ingest("frame-3").get_json()["status"] == "duplicate"
+    assert ingest("same-sheet").get_json()["status"] == "duplicate"
+
+    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_: _api_validation(None, valid=False))
+    assert ingest("obscured-1").get_json()["status"] == "rejected"
+    assert ingest("obscured-2").get_json()["status"] == "rejected"
+    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", validate)
+    assert ingest("new-sheet-1", next_image).get_json()["status"] == "deferred"
+    assert ingest("new-sheet-2", next_image).get_json()["status"] == "deferred"
+    second = ingest("new-sheet-3", next_image)
+    assert second.status_code == 202 and second.get_json()["status"] == "queued"
+
+    jobs = db.session.scalars(select(CaptureJob).order_by(CaptureJob.id)).all()
+    assert [job.capture_id for job in jobs] == ["frame-3", "new-sheet-3"]
+    assert all(job.camera_id == "test-camera" and job.source == "api" for job in jobs)
+    assert jobs[0].detection_metadata["detected_markers"] == 4
+    status = client.get("/api/camera/status").get_json()
+    assert status["images_received"] == 10
+    assert status["images_accepted"] == 2
+    assert status["duplicates_ignored"] >= 2
+    detail = client.get("/api/camera/captures/frame-3").get_json()
+    assert detail["camera_id"] == "test-camera"
+    assert client.get(detail["image_url"]).status_code == 200
+
+
+def test_camera_ingest_validates_real_v3_template_before_queueing(app, client, blank_v3_frame, tmp_path):
+    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["CAMERA_STABLE_FRAME_COUNT"] = 2
+    _api_assessment()
+    ok, encoded = cv2.imencode(".png", blank_v3_frame)
+    assert ok
+    image = encoded.tobytes()
+    statuses = []
+    for index in range(3):
+        response = client.post(
+            "/api/camera/ingest", data=image, content_type="image/png",
+            headers={"X-Camera-ID": "real-v3-camera", "X-Capture-ID": f"real-v3-{index}"},
+        )
+        assert response.status_code in {200, 202}
+        statuses.append(response.get_json()["status"])
+    assert statuses == ["deferred", "deferred", "queued"]
+    job = db.session.scalar(select(CaptureJob).where(CaptureJob.camera_id == "real-v3-camera"))
+    assert job is not None
+    assert job.detection_metadata["detected_markers"] == 4
+    assert job.detection_metadata["geometry_valid"] is True
+
+
+def test_camera_ingest_supports_multipart_and_missing_optional_metadata(app, client, monkeypatch, tmp_path):
+    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["CAMERA_STABLE_FRAME_COUNT"] = 2
+    _api_assessment()
+    image = _blank_png()
+    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_: _api_validation([0] * 1440))
+    responses = [
+        client.post("/api/camera/ingest", data={"image": (BytesIO(image), "page.png")}, content_type="multipart/form-data")
+        for _ in range(3)
+    ]
+    assert [response.get_json()["status"] for response in responses] == ["deferred", "deferred", "queued"]
+    job = db.session.scalar(select(CaptureJob).where(CaptureJob.camera_id == "default-camera"))
+    assert job is not None and len(job.capture_id) == 32
+
+
+def test_image_validation_accepts_jpeg_of_a_real_v3_template(app, blank_v3_frame):
+    ok, encoded = cv2.imencode(".jpg", blank_v3_frame)
+    assert ok
+    result = validate_camera_image(encoded.tobytes(), "image/jpeg", app.config)
+    assert result["valid"] is True
+    assert result["extension"] == ".jpg"
+    assert result["detected_markers"] == 4
+    assert result["geometry_valid"] is True
+
+
+class _FakeCameraHeaders(dict):
+    def get_content_type(self):
+        return self["Content-Type"]
+
+
+class _FakeCameraResponse:
+    def __init__(self, payload, content_type="image/jpeg", status=200):
+        self.payload = payload
+        self.headers = _FakeCameraHeaders({"Content-Type": content_type})
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self, _size=-1):
+        return self.payload
+
+
+def _jpeg(image):
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    return encoded.tobytes()
+
+
+def _configured_poller(app, opener):
+    from services.camera_poller import CameraPoller
+
+    app.config["PAPARAZZI_CAMERA_URL"] = "http://192.168.1.73/capture"
+    app.config["PAPARAZZI_CAMERA_ID"] = "poller-test-camera"
+    return CameraPoller(app, opener=opener)
+
+
+def test_camera_poller_fetches_jpeg_and_calls_shared_ingestion_service(app, monkeypatch, blank_v3_frame):
+    from services.camera_poller import CameraPoller
+
+    payload = _jpeg(blank_v3_frame)
+    requests = []
+
+    def open_camera(req, timeout):
+        requests.append((req.full_url, req.get_header("Cache-control"), timeout))
+        return _FakeCameraResponse(payload)
+
+    app.config["PAPARAZZI_CAMERA_URL"] = "http://192.168.1.73/capture"
+    app.config["PAPARAZZI_CAMERA_ID"] = "poller-fetch-test"
+    app.config["PAPARAZZI_CAMERA_TIMEOUT"] = 2.5
+    received = []
+    monkeypatch.setattr(
+        "services.camera_poller.ingest_camera_image_bytes",
+        lambda *args, **kwargs: received.append((args, kwargs)) or IngestionResult({"status": "deferred"}),
+    )
+    result = CameraPoller(app, opener=open_camera).poll_once()
+    assert result["status"] == "deferred"
+    assert requests == [("http://192.168.1.73/capture", "no-cache, no-store", 2.5)]
+    assert received[0][0][:3] == (payload, "image/jpeg", "poller-fetch-test")
+    state = db.session.get(CameraIngestionState, "poller-fetch-test")
+    assert state.connection_status == "connected"
+    assert state.frames_fetched == 1
+    assert state.last_fetch_at is not None
+
+
+@pytest.mark.parametrize("failure", [
+    lambda: _FakeCameraResponse(b"offline", "text/plain", 503),
+    lambda: TimeoutError("timeout"),
+    lambda: _FakeCameraResponse(b"not-jpeg", "image/jpeg"),
+])
+def test_camera_poller_records_http_timeout_and_invalid_frame_failures(app, failure):
+    from services.camera_poller import CameraPoller
+
+    def open_camera(*_args, **_kwargs):
+        result = failure()
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    poller = _configured_poller(app, open_camera)
+    result = poller.poll_once()
+    assert result["status"] == "error"
+    state = db.session.get(CameraIngestionState, "poller-test-camera")
+    assert state.last_error
+    assert db.session.query(CaptureJob).count() == 0
+    if state.frames_fetched:
+        assert state.frames_fetched == 1
+        assert state.rejected_count == 1
+    else:
+        assert state.connection_status == "disconnected"
+        assert state.frames_fetched == 0
+
+
+def test_camera_poller_reconnects_after_camera_timeout(app, monkeypatch, blank_v3_frame):
+    from services.camera_poller import CameraPoller
+
+    calls = 0
+
+    def open_camera(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise TimeoutError("camera asleep")
+        return _FakeCameraResponse(_jpeg(blank_v3_frame))
+
+    app.config["PAPARAZZI_CAMERA_URL"] = "http://192.168.1.73/capture"
+    app.config["PAPARAZZI_CAMERA_ID"] = "recovery-test-camera"
+    monkeypatch.setattr("services.camera_poller.ingest_camera_image_bytes", lambda *_args, **_kwargs: IngestionResult({"status": "deferred"}))
+    poller = CameraPoller(app, opener=open_camera)
+    assert poller.poll_once()["status"] == "error"
+    assert poller.poll_once()["status"] == "deferred"
+    state = db.session.get(CameraIngestionState, "recovery-test-camera")
+    assert state.connection_status == "connected"
+    assert state.frames_fetched == 1
+    assert state.last_error is None
+
+
+def test_camera_poller_respects_poll_interval_and_shuts_down_gracefully(app, monkeypatch):
+    from services.camera_poller import CameraPoller
+
+    app.config["PAPARAZZI_CAMERA_URL"] = "http://192.168.1.73/capture"
+    app.config["PAPARAZZI_CAMERA_ID"] = "interval-test-camera"
+    app.config["PAPARAZZI_CAMERA_POLL_INTERVAL"] = 0.75
+
+    class StopAfterOneWait:
+        stopped = False
+        waits = []
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            self.stopped = True
+            return True
+
+    event = StopAfterOneWait()
+    poller = CameraPoller(app, opener=lambda *_a, **_kw: None, stop_event=event)
+    monkeypatch.setattr(poller, "poll_once", lambda: {"status": "deferred"})
+    poller.run()
+    assert event.waits == [pytest.approx(0.75, abs=0.01)]
+    assert db.session.get(CameraIngestionState, "interval-test-camera").poller_running is False
+
+
+def test_second_poller_cannot_acquire_the_same_camera_lock(app):
+    from services.camera_poller import CameraPoller
+
+    app.config["PAPARAZZI_CAMERA_URL"] = "http://192.168.1.73/capture"
+    app.config["PAPARAZZI_CAMERA_ID"] = "locked-camera"
+    lock_key = "paparazzi-camera-poller:locked-camera"
+    lock_owner = db.engines[None].engine.connect()
+    acquired = lock_owner.scalar(text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"), {"lock_key": lock_key})
+    assert acquired is True
+    try:
+        with pytest.raises(RuntimeError, match="already holds the lock"):
+            CameraPoller(app, opener=lambda *_args, **_kwargs: None).run()
+    finally:
+        lock_owner.execute(text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"), {"lock_key": lock_key})
+        lock_owner.close()
+
+
+def test_camera_poller_processes_duplicate_and_replacement_frames_once(app, blank_v3_frame, tmp_path):
+    from services.camera_poller import CameraPoller
+
+    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    app.config["CAMERA_STABLE_FRAME_COUNT"] = 2
+    app.config["CAMERA_BOTTOM_MISSING_FRAME_COUNT"] = 2
+    app.config["PAPARAZZI_CAMERA_URL"] = "http://192.168.1.73/capture"
+    app.config["PAPARAZZI_CAMERA_ID"] = "replacement-poller-camera"
+    assessment = _api_assessment()
+
+    next_page = blank_v3_frame.copy()
+    profile = load_v3_profile()
+    answer_centers = get_answer_bubble_centers_mm(20, profile)
+    pixels_per_mm = 240 / 25.4
+    for question in range(1, 21):
+        choice = "ABCDE"[(question - 1) % 5]
+        x_mm, y_mm = answer_centers[question]["ABCDE".index(choice)]
+        cv2.circle(next_page, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), 10, (15, 15, 15), -1)
+
+    obscured = blank_v3_frame.copy()
+    centers = _profile_mark_centers(profile)
+    half = round(profile["registration_marks"]["size_mm"] * pixels_per_mm / 2) + 6
+    for name in ("bottomleft", "bottomright"):
+        x_mm, y_mm = centers[name]
+        x, y = round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)
+        cv2.rectangle(obscured, (x - half, y - half), (x + half, y + half), (255, 255, 255), -1)
+
+    fetched = [_jpeg(blank_v3_frame)] * 4 + [_jpeg(obscured)] * 2 + [_jpeg(next_page)] * 3
+    index = 0
+
+    def open_camera(*_args, **_kwargs):
+        nonlocal index
+        response = _FakeCameraResponse(fetched[index])
+        index += 1
+        return response
+
+    poller = CameraPoller(app, opener=open_camera)
+    statuses = [poller.poll_once()["status"] for _ in fetched]
+    assert statuses == ["deferred", "deferred", "queued", "duplicate", "rejected", "rejected", "deferred", "deferred", "queued"]
+    jobs = db.session.scalars(select(CaptureJob).order_by(CaptureJob.id)).all()
+    assert len(jobs) == 2
+    assert {job.assessment_id for job in jobs} == {assessment.id}
+    assert {job.camera_id for job in jobs} == {"replacement-poller-camera"}
+    assert db.session.get(CameraIngestionState, "replacement-poller-camera").frames_fetched == 9
+
+
+def test_camera_poller_rejects_public_hosts_and_start_stop_controls_require_token(app, client):
+    from services.camera_poller import _NoRedirectHandler, validate_camera_url
+
+    for unsafe in ("https://example.com/capture", "http://127.0.0.1.evil.example/capture", "file:///etc/passwd"):
+        with pytest.raises(ValueError):
+            validate_camera_url(unsafe)
+    assert _NoRedirectHandler().redirect_request(None, None, 302, "Found", {}, "http://192.168.1.74/elsewhere") is None
+    app.config["PAPARAZZI_CAMERA_URL"] = "http://192.168.1.73/capture"
+    app.config["CAMERA_CONTROL_TOKEN"] = "unit-test-secret"
+    assessment = _api_assessment()
+    invalid_assessment = Assessment(title="Incomplete camera assessment", subject="Test", class_section="API", total_questions=1)
+    db.session.add(invalid_assessment)
+    db.session.commit()
+    scanner_control = db.session.get(ScannerControl, 1)
+    scanner_control.active = True
+    db.session.commit()
+    denied = client.post("/scanning/automatic/poller/start", data={"camera_control_token": "wrong"})
+    assert denied.status_code == 403
+    incomplete = client.post("/scanning/automatic/poller/start", data={"camera_control_token": "unit-test-secret", "assessment_id": invalid_assessment.id})
+    assert incomplete.status_code == 302
+    conflict = client.post("/scanning/automatic/poller/start", data={"camera_control_token": "unit-test-secret", "assessment_id": assessment.id})
+    assert conflict.status_code == 302
+    assert db.session.get(CameraIngestionState, "paparazzi-esp32-01") is None
+    scanner_control.active = False
+    db.session.commit()
+    started = client.post("/scanning/automatic/poller/start", data={"camera_control_token": "unit-test-secret", "assessment_id": assessment.id, "camera_url": "http://203.0.113.8/capture"})
+    assert started.status_code == 302
+    assert app.config["PAPARAZZI_CAMERA_URL"] == "http://192.168.1.73/capture"
+    state = db.session.get(CameraIngestionState, "paparazzi-esp32-01")
+    assert state.polling_enabled is True
+    app.config["ESP32_STREAM_URL"] = "http://192.168.1.73:81/stream"
+    app.config["ESP32_CAPTURE_URL"] = "http://192.168.1.73/capture"
+    client.post("/scanning/automatic/start", data={"assessment_id": assessment.id})
+    assert db.session.get(ScannerControl, 1).active is False
+    assert client.post("/scanning/automatic/manual-capture").status_code == 302
+    stopped = client.post("/scanning/automatic/poller/stop", data={"camera_control_token": "unit-test-secret"})
+    assert stopped.status_code == 302
+    db.session.refresh(state)
+    assert state.polling_enabled is False
+    page = client.get("/scanning/automatic")
+    assert page.status_code == 200
+    assert b"http://192.168.1.73/capture" in page.data
+    assert b"Start polling" in page.data
+    assert b"unit-test-secret" not in page.data
+
+
+def test_camera_ingest_rejects_corrupt_and_unsupported_uploads(client):
+    unsupported = client.post("/api/camera/ingest", data=b"not an image", content_type="text/plain")
+    assert unsupported.get_json()["status"] == "rejected"
+    corrupt = client.post("/api/camera/ingest", data=b"\xff\xd8\xffbroken", content_type="image/jpeg")
+    assert corrupt.get_json()["reason"] == "corrupted_image"
+    empty = client.post("/api/camera/ingest", data=b"", content_type="image/png")
+    assert empty.status_code == 400

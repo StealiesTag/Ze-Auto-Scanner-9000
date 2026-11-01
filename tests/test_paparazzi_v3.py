@@ -9,6 +9,7 @@ import pytest
 
 from services.paparazzi_v3_scanner import (
     CANONICAL_DPI,
+    _bubble_fill_score,
     align_paparazzi_v3,
     classify_v3_bubbles,
     detect_v3_answers,
@@ -16,8 +17,10 @@ from services.paparazzi_v3_scanner import (
     get_answer_bubble_centers_mm,
     get_student_id_bubble_centers_mm,
     load_v3_profile,
+    preprocess_v3_image,
 )
 from services.image_processor import ImageProcessingError
+from services.marker_detection import detect_v3_registration_markers
 
 ASSET_DIR = Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "v3" / "Paparazzi_Answer_Sheets_V3_Package"
 DPI = 240
@@ -48,11 +51,18 @@ def _fill_profile_bubbles(image, profile, question_count, answers, student_id="1
     return image
 
 
-def test_v3_profile_geometry_matches_all_original_vector_pdfs():
+def test_v3_profile_geometry_matches_revised_vector_pdfs_and_preserves_centers():
     profile = load_v3_profile()
     assert profile["version"] == "PAPARAZZI-OMR-A4-V3"
+    originals = ASSET_DIR / "originals"
+    original_profile = __import__("json").loads((originals / "Paparazzi_Standard_V3_Profile.json").read_text())
+    assert original_profile["answers"]["bubble_radius_mm"] == 1.48
+    assert profile["answers"]["bubble_radius_mm"] == 1.85
+    assert profile["answers"]["bubble_radius_mm"] / original_profile["answers"]["bubble_radius_mm"] - 1 == pytest.approx(0.25)
     for count in (20, 50, 100):
-        page = pymupdf.open(ASSET_DIR / f"Answer_Sheet_{count}Q_V3.pdf")[0]
+        path = ASSET_DIR / f"Answer_Sheet_{count}Q_V3.pdf"
+        page = pymupdf.open(path)[0]
+        old_page = pymupdf.open(originals / path.name)[0]
         circles = [
             drawing["rect"]
             for drawing in page.get_drawings()
@@ -62,10 +72,33 @@ def test_v3_profile_geometry_matches_all_original_vector_pdfs():
         answer_radius = profile["answers"]["bubble_radius_mm"]
         id_count = sum(abs(circle.width * 25.4 / 144 - id_radius) < 0.01 for circle in circles)
         answer_count = sum(abs(circle.width * 25.4 / 144 - answer_radius) < 0.01 for circle in circles)
+        old_circles = [d["rect"] for d in old_page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.48) < 0.01]
+        new_answer_circles = [d["rect"] for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.85) < 0.01]
+        old_centers = sorted((round(r.x0 + r.width / 2, 3), round(r.y0 + r.height / 2, 3)) for r in old_circles)
+        new_centers = sorted((round(r.x0 + r.width / 2, 3), round(r.y0 + r.height / 2, 3)) for r in new_answer_circles)
         assert abs(page.rect.width * 25.4 / 72 - 210) < 0.01
         assert abs(page.rect.height * 25.4 / 72 - 297) < 0.01
         assert id_count == 70
         assert answer_count == count * 5
+        assert len(old_centers) == len(new_centers) == count * 5
+        assert old_centers == new_centers
+        old_id = sorted((round(d["rect"].x0 + d["rect"].width / 2, 3), round(d["rect"].y0 + d["rect"].height / 2, 3)) for d in old_page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.12) < 0.01)
+        new_id = sorted((round(d["rect"].x0 + d["rect"].width / 2, 3), round(d["rect"].y0 + d["rect"].height / 2, 3)) for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.12) < 0.01)
+        assert len(old_id) == len(new_id) == 70
+        assert old_id == new_id
+        old_marks = sorted(tuple(round(v, 3) for v in (d["rect"].x0, d["rect"].y0, d["rect"].x1, d["rect"].y1)) for d in old_page.get_drawings() if abs(d["rect"].width * 25.4 / 72 - 6.0) < 0.01)
+        new_marks = sorted(tuple(round(v, 3) for v in (d["rect"].x0, d["rect"].y0, d["rect"].x1, d["rect"].y1)) for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 72 - 6.0) < 0.01)
+        assert len(old_marks) == len(new_marks) == 4
+        assert old_marks == new_marks
+        spans = [pymupdf.Rect(span["bbox"]) for block in page.get_text("dict")["blocks"] if "lines" in block for line in block["lines"] for span in line["spans"] if span["text"].strip()]
+        assert all(not (rect & span).get_area() for rect in new_answer_circles for span in spans)
+        answer_centers = get_answer_bubble_centers_mm(count, profile)
+        mm_points = [point for row in answer_centers.values() for point in row]
+        closest = min(np.linalg.norm(np.asarray(a) - np.asarray(b)) for i, a in enumerate(mm_points) for b in mm_points[i + 1:])
+        assert closest == pytest.approx(5.0)
+        assert closest - 2 * answer_radius == pytest.approx(1.30)
+        old_page.parent.close()
+        page.parent.close()
         assert len(get_answer_bubble_centers_mm(count, profile)) == count
 
     combined = pymupdf.open(ASSET_DIR / "Answer_Sheets_20_50_100_V3.pdf")
@@ -119,15 +152,10 @@ def test_v3_detection_handles_rotation_and_perspective_from_original_pdf():
     assert perspective_answers[0]["answer"] == "C"
     assert perspective_answers[-1]["answer"] == "E"
 
-    rotated = cv2.rotate(source, cv2.ROTATE_180)
-    rotated_aligned = align_paparazzi_v3(rotated, profile, question_count=20)
-    assert rotated_aligned.orientation == "rotation_180"
-    assert detect_v3_student_id(rotated_aligned.aligned_image, profile)["student_id"] == "1234567"
-
-    sideways = cv2.rotate(source, cv2.ROTATE_90_CLOCKWISE)
-    sideways_aligned = align_paparazzi_v3(sideways, profile, question_count=20)
-    assert sideways_aligned.aligned_image.shape[:2] == (round(297 * CANONICAL_DPI / 25.4), round(210 * CANONICAL_DPI / 25.4))
-    assert detect_v3_student_id(sideways_aligned.aligned_image, profile)["student_id"] == "1234567"
+    for angle, rotation in ((90, cv2.ROTATE_90_CLOCKWISE), (180, cv2.ROTATE_180), (270, cv2.ROTATE_90_COUNTERCLOCKWISE)):
+        rotated_aligned = align_paparazzi_v3(cv2.rotate(source, rotation), profile, question_count=20)
+        assert detect_v3_student_id(rotated_aligned.aligned_image, profile)["student_id"] == "1234567"
+        assert detect_v3_answers(rotated_aligned.aligned_image, 20, profile)[0]["answer"] == "C"
 
 
 def test_v3_detector_rejects_unrelated_or_incomplete_pages():
@@ -148,10 +176,57 @@ def test_v3_local_background_recognizes_light_fill_and_flags_uncertain_scores():
     centers = get_answer_bubble_centers_mm(20, profile)[1]
     pixels_per_mm = DPI / 25.4
     x_mm, y_mm = centers[0]
-    cv2.circle(image, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), round(1.48 * pixels_per_mm * 0.70), (185, 185, 185), -1)
+    cv2.circle(image, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), round(profile["answers"]["bubble_radius_mm"] * pixels_per_mm * 0.70), (185, 185, 185), -1)
     aligned = align_paparazzi_v3(image, profile, question_count=20)
     assert detect_v3_answers(aligned.aligned_image, 20, profile)[0]["answer"] == "A"
 
     uncertain = classify_v3_bubbles({"A": 0.31, "B": 0.23, "C": 0.03, "D": 0.02, "E": 0.01})
     assert uncertain["status"] == "ambiguous"
     assert uncertain["answer"] is None
+
+
+def test_v3_preprocessing_handles_low_contrast_uneven_light_noise_and_mild_blur():
+    profile = load_v3_profile()
+    answers = {1: "A", 2: "C", 20: "E"}
+    source = _fill_profile_bubbles(_render_template(20), profile, 20, answers)
+    height, width = source.shape[:2]
+    gradient = np.linspace(-35, 35, width, dtype=np.float32)[None, :, None]
+    low_contrast = np.clip(source.astype(np.float32) * 0.66 + 76 + gradient, 0, 255).astype(np.uint8)
+    rng = np.random.default_rng(713)
+    noisy = np.clip(low_contrast.astype(np.int16) + rng.normal(0, 3.0, low_contrast.shape), 0, 255).astype(np.uint8)
+    photographed = cv2.GaussianBlur(noisy, (3, 3), 0.55)
+    aligned = align_paparazzi_v3(photographed, profile, question_count=20)
+    enhanced = preprocess_v3_image(aligned.aligned_image)
+    assert enhanced.shape == aligned.aligned_image.shape[:2]
+    recognized = detect_v3_answers(aligned.aligned_image, 20, profile)
+    assert [recognized[n - 1]["answer"] for n in answers] == list(answers.values())
+    baseline_gray = cv2.cvtColor(aligned.aligned_image, cv2.COLOR_BGR2GRAY)
+    centers = get_answer_bubble_centers_mm(20, profile)
+    baseline = []
+    for number, points in centers.items():
+        scores = {choice: _bubble_fill_score(baseline_gray, points[index], profile["answers"]["bubble_radius_mm"]) for index, choice in enumerate("ABCDE")}
+        baseline.append(classify_v3_bubbles(scores))
+    baseline_correct = sum(baseline[number - 1]["answer"] == answers[number] for number in answers)
+    enhanced_correct = sum(recognized[number - 1]["answer"] == answers[number] for number in answers)
+    assert enhanced_correct >= baseline_correct
+    assert detect_v3_student_id(aligned.aligned_image, profile)["student_id"] == "1234567"
+
+
+def test_supplied_camera_capture_remains_rejected_when_v3_geometry_is_absent():
+    path = Path(__file__).resolve().parents[1] / "test_fixtures" / "paparazzi_v3_camera_capture.jpg"
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    assert image is not None
+    assert image.shape[:2] == (1536, 2048)
+    detection = detect_v3_registration_markers(image)
+    assert detection["geometry_valid"] is False
+    with pytest.raises(ImageProcessingError):
+        align_paparazzi_v3(image, load_v3_profile(), question_count=20)
+
+
+def test_v3_preprocessing_stages_are_configurable(monkeypatch):
+    image = np.arange(64 * 80, dtype=np.uint8).reshape(64, 80)
+    monkeypatch.setenv("PAPARAZZI_V3_ILLUMINATION_CORRECTION", "false")
+    monkeypatch.setenv("PAPARAZZI_V3_CLAHE_ENABLED", "false")
+    monkeypatch.setenv("PAPARAZZI_V3_DENOISE_MEDIAN_KERNEL", "0")
+    monkeypatch.setenv("PAPARAZZI_V3_SHARPEN_AMOUNT", "0")
+    assert np.array_equal(preprocess_v3_image(image), image)

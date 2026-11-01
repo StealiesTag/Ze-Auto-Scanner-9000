@@ -28,7 +28,7 @@ This project is a modular Flask application for automated answer-sheet scanning,
 
 The local MVP supports student records and CSV import, assessment and answer-key editing, Paparazzi Standard V3 sheet downloads and staged OMR review, PostgreSQL submission persistence, teacher correction history, class analytics, optional AI teaching suggestions, and an ESP32 capture queue. V3 templates and their source JSON profile are stored unchanged under `static/answer_sheets/v3/`; measured vector origins are in a separate addendum. Scanner/camera behavior is validated with synthetic frames only; physical printer, camera, and ejector validation remain outstanding. See the V3 and [ESP32 scanning docs](docs/esp32-automatic-scanning.md) for geometry, migration, and validation status.
 
-The Flask factory registers models before Flask-Migrate inspects metadata. PostgreSQL via Psycopg 3 is required; SQLite is rejected. Revisions `20261101_0003` and `20261101_0004` add AI suggestion storage and the durable ESP32 scan queue. Back up and inspect any existing database before applying migrations.
+The Flask factory registers models before Flask-Migrate inspects metadata. PostgreSQL via Psycopg 3 is required; SQLite is rejected. Revisions `20261101_0003` through `20261101_0006` add AI suggestions, the durable scan queue, camera HTTP ingestion, and CameraWebServer poller status. Back up and inspect any existing database before applying migrations; this implementation does not migrate the configured development database.
 
 This is a local, single-teacher MVP. It does not include authentication, production deployment safeguards, Canvas integration, handwriting recognition, or written-answer grading. ESP32 integration is software-only and still needs physical validation.
 
@@ -104,7 +104,7 @@ AI Teaching Insights are generated only on demand from aggregated finalized asse
 
 See [AI Teaching Insights setup and migration notes](docs/ai-teaching-insights.md) for the complete data flow and deployment steps.
 
-ESP32 automatic capture requires migrations through `20261101_0004`, configured stream/still URLs, and the separate `python -m services.scan_worker` process. Its transition logic is not physically validated; see [ESP32 automatic scanning](docs/esp32-automatic-scanning.md).
+ESP32 stream/still scanning requires the reviewed database migrations and separate `python -m services.scan_worker` process. CameraWebServer JPEG polling also uses `PAPARAZZI_CAMERA_URL`, a local/private IP, and `python -m services.camera_poller`; see [CameraWebServer polling](docs/camera-webserver-poller.md). Neither camera path has physical feeder validation.
 
 ### 4) Apply the included migration
 

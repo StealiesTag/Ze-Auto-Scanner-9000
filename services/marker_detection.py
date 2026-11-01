@@ -31,7 +31,7 @@ def detect_v3_registration_markers(frame: np.ndarray, profile: dict | None = Non
         return _empty_detection("frame_too_small")
     candidates = _find_square_candidates(gray)[:20]
     if len(candidates) < 4:
-        return _empty_detection("markers_not_found")
+        return _empty_detection("markers_not_found", detected_markers=len(candidates))
 
     combinations = []
     for group in itertools.combinations(candidates, 4):
@@ -39,7 +39,7 @@ def detect_v3_registration_markers(frame: np.ndarray, profile: dict | None = Non
         if scored is not None:
             combinations.append((scored[0], _order_quad(np.asarray([item["center"] for item in group], dtype=np.float32))))
     if not combinations:
-        return _empty_detection("invalid_marker_geometry")
+        return _empty_detection("invalid_marker_geometry", detected_markers=len(candidates))
     score, points = min(combinations, key=lambda result: result[0])
     corner_names = ("top_left", "top_right", "bottom_right", "bottom_left")
     marker_coordinates = {name: [float(points[index][0]), float(points[index][1])] for index, name in enumerate(corner_names)}
@@ -75,6 +75,7 @@ def detect_v3_registration_markers(frame: np.ndarray, profile: dict | None = Non
     bottom_visible = all(marker_coordinates[name] for name in ("bottom_left", "bottom_right"))
     return {
         "markers_visible": len(marker_coordinates) == 4,
+        "detected_markers": len(marker_coordinates),
         "marker_coordinates": marker_coordinates,
         "bottom_markers_visible": bottom_visible,
         "geometry_valid": True,
@@ -89,9 +90,10 @@ def detect_v3_registration_markers(frame: np.ndarray, profile: dict | None = Non
     }
 
 
-def _empty_detection(status: str) -> dict:
+def _empty_detection(status: str, *, detected_markers: int = 0) -> dict:
     return {
         "markers_visible": False,
+        "detected_markers": detected_markers,
         "marker_coordinates": {},
         "bottom_markers_visible": False,
         "geometry_valid": False,

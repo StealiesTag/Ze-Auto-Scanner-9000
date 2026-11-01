@@ -68,6 +68,41 @@ class CaptureStateMachine:
     def seed_waiting_for_first_sheet(self) -> None:
         self.state = CaptureState.WAITING_FOR_FIRST_SHEET
 
+    def to_dict(self) -> dict:
+        """Return JSON-safe state so API observations survive process restarts."""
+        return {
+            "state": self.state.value,
+            "state_before_pause": getattr(self, "_state_before_pause", None).value
+            if getattr(self, "_state_before_pause", None) else None,
+            "current_capture_id": self.current_capture_id,
+            "completed_capture_count": self.completed_capture_count,
+            "bottom_missing_count": self.bottom_missing_count,
+            "stable_count": self._stable_count,
+            "previous_coordinates": self._previous_coordinates,
+            "error": self._error,
+            "stable_signature": self._stable_signature,
+            "captured_signature": self._captured_signature,
+        }
+
+    def restore(self, data: dict | None) -> None:
+        """Restore dynamic state while retaining the caller's configured thresholds."""
+        if not data:
+            return
+        self.state = CaptureState(data.get("state", CaptureState.WAITING_FOR_FIRST_SHEET.value))
+        before_pause = data.get("state_before_pause")
+        self._state_before_pause = CaptureState(before_pause) if before_pause else None
+        self.current_capture_id = data.get("current_capture_id")
+        self.completed_capture_count = int(data.get("completed_capture_count", 0))
+        self.bottom_missing_count = int(data.get("bottom_missing_count", 0))
+        self._stable_count = int(data.get("stable_count", 0))
+        coordinates = data.get("previous_coordinates")
+        self._previous_coordinates = {
+            key: (float(value[0]), float(value[1])) for key, value in coordinates.items()
+        } if coordinates else None
+        self._error = data.get("error")
+        self._stable_signature = data.get("stable_signature")
+        self._captured_signature = data.get("captured_signature")
+
     def observe(self, detection: dict) -> bool:
         """Consume one detector result. Return True exactly once when capture may begin."""
         if self.state in {CaptureState.PAUSED, CaptureState.ERROR, CaptureState.CAPTURING, CaptureState.QUEUING_IMAGE}:

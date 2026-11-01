@@ -3,7 +3,7 @@ from .student import Student
 from .scan_draft import ScanDraft
 from .submission import AnswerCorrection, Response, Submission
 from .teaching_insight import TeachingInsight
-from .capture_job import CaptureJob, ScannerControl
+from .capture_job import CameraIngestionState, CaptureJob, ScannerControl
 
 __all__ = [
     "Student",
@@ -16,5 +16,6 @@ __all__ = [
     "LearningResource",
     "TeachingInsight",
     "CaptureJob",
+    "CameraIngestionState",
     "ScannerControl",
 ]

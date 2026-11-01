@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import json
 import math
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -84,17 +85,64 @@ def _gray_image(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 
+def preprocess_v3_image(image: np.ndarray) -> np.ndarray:
+    """Normalize contrast and uneven lighting without changing image dimensions."""
+    gray = _gray_image(image)
+    h, w = gray.shape
+    corrected = gray
+    if _env_bool("PAPARAZZI_V3_ILLUMINATION_CORRECTION", True):
+        sigma = max(15.0, min(h, w) / 24.0)
+        background = cv2.GaussianBlur(corrected, (0, 0), sigmaX=sigma, sigmaY=sigma)
+        corrected = cv2.divide(corrected, np.maximum(background, 1), scale=220)
+    if _env_bool("PAPARAZZI_V3_CLAHE_ENABLED", True):
+        clip_limit = _env_float("PAPARAZZI_V3_CLAHE_CLIP_LIMIT", 1.8, 0.1, 8.0)
+        grid_size = int(_env_float("PAPARAZZI_V3_CLAHE_GRID_SIZE", 8, 2, 32))
+        corrected = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(grid_size, grid_size)).apply(corrected)
+    kernel = int(_env_float("PAPARAZZI_V3_DENOISE_MEDIAN_KERNEL", 3, 0, 9))
+    if kernel > 1:
+        kernel = kernel if kernel % 2 else kernel + 1
+        corrected = cv2.medianBlur(corrected, kernel)
+    # Only apply conservative unsharp masking when Laplacian variance indicates blur.
+    amount = _env_float("PAPARAZZI_V3_SHARPEN_AMOUNT", 0.25, 0.0, 1.0)
+    blur_threshold = _env_float("PAPARAZZI_V3_SHARPEN_BLUR_THRESHOLD", 45.0, 0.0, 500.0)
+    if amount and float(cv2.Laplacian(corrected, cv2.CV_64F).var()) < blur_threshold:
+        softened = cv2.GaussianBlur(corrected, (0, 0), 0.8)
+        corrected = cv2.addWeighted(corrected, 1.0 + amount, softened, -amount, 0)
+    return corrected
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    return default if value is None else value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(maximum, max(minimum, value))
+
+
 def _find_square_candidates(gray: np.ndarray) -> list[dict]:
     height, width = gray.shape
     image_area = float(width * height)
-    enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    enhanced = preprocess_v3_image(gray)
     thresholds = []
-    _, otsu = cv2.threshold(cv2.GaussianBlur(enhanced, (5, 5), 0), 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    thresholds.append(otsu)
+    if _env_bool("PAPARAZZI_V3_THRESHOLD_OTSU", True):
+        _, otsu = cv2.threshold(cv2.GaussianBlur(enhanced, (5, 5), 0), 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        thresholds.append(otsu)
     block_size = max(31, min(101, (min(width, height) // 12) | 1))
+    configured_block = int(_env_float("PAPARAZZI_V3_ADAPTIVE_BLOCK_SIZE", block_size, 3, 201))
+    block_size = configured_block if configured_block % 2 else configured_block + 1
     if block_size % 2 == 0:
         block_size += 1
-    thresholds.append(cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, block_size, 11))
+    if _env_bool("PAPARAZZI_V3_THRESHOLD_ADAPTIVE_GAUSSIAN", True):
+        gaussian_c = _env_float("PAPARAZZI_V3_ADAPTIVE_GAUSSIAN_C", 11.0, -20.0, 30.0)
+        thresholds.append(cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, block_size, gaussian_c))
+    if _env_bool("PAPARAZZI_V3_THRESHOLD_ADAPTIVE_MEAN", True):
+        mean_c = _env_float("PAPARAZZI_V3_ADAPTIVE_MEAN_C", 7.0, -20.0, 30.0)
+        thresholds.append(cv2.adaptiveThreshold(enhanced, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, block_size, mean_c))
 
     candidates = []
     for binary in thresholds:
@@ -126,7 +174,7 @@ def _find_square_candidates(gray: np.ndarray) -> list[dict]:
             if not any(np.linalg.norm(center - item["center"]) < min(side, item["side"]) * 0.45 for item in candidates):
                 candidates.append({"center": center, "vertices": vertices, "side": side, "quality": quality})
 
-    return sorted(candidates, key=lambda item: item["quality"], reverse=True)[:36]
+    return sorted(candidates, key=lambda item: item["quality"], reverse=True)[:20]
 
 
 def _order_quad(points: np.ndarray) -> np.ndarray:
@@ -171,6 +219,11 @@ def _combination_score(candidates: tuple[dict, ...], profile: dict, image_shape:
     frame_width = (top + bottom) / 2.0 if aspect <= 1.0 else (left + right) / 2.0
     frame_height = (left + right) / 2.0 if aspect <= 1.0 else (top + bottom) / 2.0
     expected_mark_side = mark_size * (frame_width / page_width_between_centers + frame_height / page_height_between_centers) / 2.0
+    # Registration marks have a known printed size. Reject bubble outlines and
+    # other page artifacts that happen to occupy the four expected corners.
+    size_ratios = [candidate["side"] / expected_mark_side for candidate in candidates]
+    if any(not 0.65 <= ratio <= 1.45 for ratio in size_ratios):
+        return None
     side_error = sum(abs(math.log(candidate["side"] / expected_mark_side)) for candidate in candidates) / 4.0
     aspect_error = min(abs(math.log(aspect / expected_aspect)), abs(math.log(aspect * expected_aspect)))
     side_balance = abs(math.log(width_ratio)) + abs(math.log(height_ratio))
@@ -223,6 +276,7 @@ def _layout_match_score(gray: np.ndarray, question_count: int, profile: dict) ->
 def align_paparazzi_v3(image: np.ndarray, profile: dict | None = None, question_count: int = 20) -> V3AlignmentResult:
     profile = profile or load_v3_profile()
     gray = _gray_image(image)
+    normalized_gray = preprocess_v3_image(gray)
     candidates = _find_square_candidates(gray)
     if len(candidates) < 4:
         raise ImageProcessingError("Could not find four V3 square registration marks. Include the whole page and all corners.")
@@ -251,8 +305,8 @@ def align_paparazzi_v3(image: np.ndarray, profile: dict | None = None, question_
         source = np.roll(ordered, -shift, axis=0).astype(np.float32)
         transform = cv2.getPerspectiveTransform(source, target)
         aligned = cv2.warpPerspective(image, transform, (output_width, output_height), borderValue=(255, 255, 255))
-        aligned_gray = _gray_image(aligned)
-        match_score = _layout_match_score(aligned_gray, question_count, profile)
+        normalized_aligned = cv2.warpPerspective(normalized_gray, transform, (output_width, output_height), borderValue=255)
+        match_score = _layout_match_score(normalized_aligned, question_count, profile)
         orientations.append((match_score, aligned, source, shift))
     orientations.sort(key=lambda result: result[0], reverse=True)
     match_score, aligned, source, shift = orientations[0]
@@ -312,7 +366,7 @@ def classify_v3_bubbles(values: dict[str, float]) -> dict:
 def detect_v3_answers(aligned_image: np.ndarray, question_count: int, profile: dict | None = None) -> list[dict]:
     profile = profile or load_v3_profile()
     centers = get_answer_bubble_centers_mm(question_count, profile)
-    gray = _gray_image(aligned_image)
+    gray = preprocess_v3_image(aligned_image)
     results = []
     choices = profile["answers"]["choices"]
     for question_number, question_centers in centers.items():
@@ -330,7 +384,7 @@ def detect_v3_answers(aligned_image: np.ndarray, question_count: int, profile: d
 
 def detect_v3_student_id(aligned_image: np.ndarray, profile: dict | None = None) -> dict:
     profile = profile or load_v3_profile()
-    gray = _gray_image(aligned_image)
+    gray = preprocess_v3_image(aligned_image)
     section = profile["student_id"]
     columns = get_student_id_bubble_centers_mm(profile)
     digits = []

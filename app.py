@@ -6,6 +6,7 @@ from sqlalchemy.engine import make_url
 from config import config
 from extensions import csrf, db, migrate
 from models import AnswerCorrection, Assessment, LearningResource, Question, Response, Student, Submission
+from services.camera_poller import validate_camera_url
 
 
 def create_app(config_name: str = "default") -> Flask:
@@ -38,10 +39,20 @@ def create_app(config_name: str = "default") -> Flask:
             or app.config["CAMERA_MARKER_MOVEMENT_TOLERANCE_PX"] < 0
             or not 0 < app.config["CAMERA_MIN_PAGE_CHANGE_RATIO"] <= 1
             or not 0 < app.config["CAMERA_MIN_PAGE_AREA_RATIO"] <= 1
+            or not 0 <= app.config["CAMERA_MIN_MARKER_CONFIDENCE"] <= 1
             or app.config["CAMERA_POLL_INTERVAL_SECONDS"] <= 0
             or app.config["ESP32_REQUEST_TIMEOUT_SECONDS"] <= 0
+            or app.config["PAPARAZZI_CAMERA_POLL_INTERVAL"] <= 0
+            or app.config["PAPARAZZI_CAMERA_TIMEOUT"] <= 0
             or app.config["CAPTURE_QUEUE_CAPACITY"] < 1):
         raise RuntimeError("Automatic scanning thresholds and queue capacity must be positive and within their documented ranges.")
+    if app.config["PAPARAZZI_CAMERA_URL"]:
+        try:
+            validate_camera_url(app.config["PAPARAZZI_CAMERA_URL"])
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+    if not app.config["PAPARAZZI_CAMERA_ID"] or len(app.config["PAPARAZZI_CAMERA_ID"]) > 100:
+        raise RuntimeError("PAPARAZZI_CAMERA_ID must contain 1-100 characters.")
 
     @app.errorhandler(413)
     def upload_too_large(_error):

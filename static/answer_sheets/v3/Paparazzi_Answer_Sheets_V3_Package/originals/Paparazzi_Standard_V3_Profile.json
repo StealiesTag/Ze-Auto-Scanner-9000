@@ -1,0 +1,88 @@
+{
+  "format": "Paparazzi Standard",
+  "version": "PAPARAZZI-OMR-A4-V3",
+  "paper": {
+    "size": "A4",
+    "width_mm": 210.0,
+    "height_mm": 297.0,
+    "orientation": "portrait"
+  },
+  "rendering": "Vector PDF; resolution-independent when printed or rasterized.",
+  "student_id": {
+    "digits": 7,
+    "digit_values": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "columns_labeled": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "encoding": "one digit per column",
+    "bubble_radius_mm": 1.12,
+    "column_pitch_mm": 10.1,
+    "row_pitch_mm": 2.85
+  },
+  "answers": {
+    "choices": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E"
+    ],
+    "bubble_radius_mm": 1.48,
+    "row_pitch_mm": 5.15,
+    "layouts": {
+      "20": {
+        "columns": 2,
+        "rows_per_column": 10
+      },
+      "50": {
+        "columns": 2,
+        "rows_per_column": 25
+      },
+      "100": {
+        "columns": 4,
+        "rows_per_column": 25
+      }
+    }
+  },
+  "registration_marks": {
+    "shape": "square",
+    "size_mm": 6,
+    "inset_mm": 7,
+    "positions_bottom_left_origin_mm": [
+      [
+        7,
+        7
+      ],
+      [
+        197.0,
+        7
+      ],
+      [
+        7,
+        284.0
+      ],
+      [
+        197.0,
+        284.0
+      ]
+    ]
+  },
+  "calibration_status": "Vector layout defined; physical print and camera validation required before production OMR."
+}

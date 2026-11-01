@@ -120,6 +120,21 @@ document.addEventListener('DOMContentLoaded', () => {
           row.append(cell);
         });
         const action = document.createElement('td');
+        if (job.image_url) {
+          const imageLink = document.createElement('a');
+          imageLink.href = job.image_url;
+          imageLink.target = '_blank';
+          imageLink.rel = 'noopener';
+          imageLink.textContent = 'View image';
+          action.append(imageLink);
+          if (job.detection?.detected_markers != null) {
+            const detection = document.createElement('span');
+            detection.className = 'small text-muted';
+            detection.textContent = ' · ' + job.detection.detected_markers + ' markers';
+            action.append(detection);
+          }
+          action.append(document.createElement('br'));
+        }
         if (job.review_url) {
           const link = document.createElement('a');
           link.href = job.review_url;
@@ -164,6 +179,23 @@ document.addEventListener('DOMContentLoaded', () => {
         setText('stability', data.stability_status ? 'Yes' : 'No');
         setText('capture-state', data.state || '—');
         setText('camera-error', data.last_error || '');
+        const ingestion = data.ingestion || {};
+        setText('ingest-received', ingestion.received ?? 0);
+        setText('ingest-rejected', ingestion.rejected ?? 0);
+        setText('ingest-accepted', ingestion.accepted ?? 0);
+        setText('ingest-duplicates', ingestion.duplicates ?? 0);
+        setText('ingest-last-received', ingestion.last_received_at ? new Date(ingestion.last_received_at).toLocaleString() : '—');
+        const poller = data.camera_poller || {};
+        setText('poller-camera-id', poller.camera_id || '—');
+        setText('poller-running', poller.running ? 'Running' : 'Stopped');
+        setText('poller-connection', poller.connection_status || 'stopped');
+        setText('poller-last-fetch', poller.last_fetch_at ? new Date(poller.last_fetch_at).toLocaleString() : '—');
+        setText('poller-last-error', poller.last_error || '—');
+        setText('poller-frames', poller.frames_fetched ?? 0);
+        setText('poller-accepted', poller.accepted ?? 0);
+        setText('poller-rejected', poller.rejected ?? 0);
+        setText('poller-duplicates', poller.duplicates ?? 0);
+        setText('poller-deferred', poller.deferred ?? 0);
         Object.entries(data.queue || {}).forEach(([key, value]) => {
           if (key === 'capacity_limit') return;
           if (key === 'capacity') {

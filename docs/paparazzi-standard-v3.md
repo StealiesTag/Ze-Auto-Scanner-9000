@@ -2,7 +2,7 @@
 
 ## Source assets
 
-The five supplied PDFs and the original JSON profile are kept under `static/answer_sheets/v3/Paparazzi_Answer_Sheets_V3_Package/` and are served directly without regeneration or modification:
+The three revised PDFs, combined PDF, and active profile are under `static/answer_sheets/v3/Paparazzi_Answer_Sheets_V3_Package/`. The original PDFs and profile are preserved in `originals/`. Run `python scripts/generate_paparazzi_v3_pdfs.py` to regenerate the PDFs from those backups; the generator only changes answer-bubble outlines.
 
 - `Answer_Sheet_20Q_V3.pdf`
 - `Answer_Sheet_50Q_V3.pdf`
@@ -10,11 +10,11 @@ The five supplied PDFs and the original JSON profile are kept under `static/answ
 - `Answer_Sheets_20_50_100_V3.pdf`
 - `Paparazzi_Standard_V3_Profile.json`
 
-`Paparazzi_Standard_V3_Vector_Origins.json` is a separate addendum. It records only the grid origins measured from the vector circles in the supplied individual PDFs because the original profile specified mark positions and pitches but omitted grid origins. The originals remain unchanged.
+`Paparazzi_Standard_V3_Vector_Origins.json` records grid origins measured from the original vector circles. All answer centers and pitches remain unchanged.
 
 ## Geometry and detector
 
-All PDFs are single-page A4 portrait (210 × 297 mm). Their vector paths confirm four filled 6 mm square marks with 7 mm edge insets, 1.12 mm student-ID bubble radius, 1.48 mm answer bubble radius, 10.1 mm ID-column pitch, 2.85 mm ID-row pitch, and 5.15 mm answer-row pitch. Measured from the vector source, the first ID center is (30.3, 46.85) mm, first answer-row center is Y=98.15 mm, and answer-choice pitch is 5 mm. First answer-column X centers are stored per question count in the vector-origin addendum.
+All PDFs are single-page A4 portrait (210 x 297 mm). The four filled 6 mm square marks with 7 mm edge insets, 1.12 mm student-ID bubble radius, 10.1 mm ID-column pitch, 2.85 mm ID-row pitch, and 5.15 mm answer-row pitch are unchanged. Answer bubbles are enlarged from 1.48 mm to 1.85 mm radius (3.70 mm diameter, a 25% increase); the closest answer-bubble center pitch is 5.0 mm, leaving 1.30 mm between outlines. First ID center (30.3, 46.85) mm, first answer-row center Y=98.15 mm, and 5 mm answer-choice pitch are preserved.
 
 `services/paparazzi_v3_scanner.py` loads the profile and measured origins, detects candidate square contours with Otsu and adaptive thresholding, checks four-corner arrangement and page aspect, tries four page rotations, and chooses the orientation with the strongest fit to the profile's printed bubble rings. It rectifies to A4 at 300 DPI. OMR uses a per-bubble local background ring to derive fill measurements, then reports detected, blank, multiple-mark, or ambiguous states and confidence. Seven ID columns are decoded with the same bubble scoring. Unmatched or unreadable IDs require manual student selection; assessment association is selected before upload because the printed handwritten assessment-code area is not OCR-read.
 
@@ -34,6 +34,6 @@ For an existing deployment, take and verify a PostgreSQL backup first, confirm `
 
 ## Verification status
 
-Automated tests render the actual PDFs and verify page boxes, mark dimensions/locations, ID/answer bubble counts and centers, all three layouts, 0/90/180-degree orientation, perspective warp, ID decoding, blank and multiple marks, and fail-closed invalid pages. A PostgreSQL integration test exercises draft persistence and grading when `TEST_DATABASE_URL` is configured.
+Automated tests render the revised PDFs and verify page boxes, marker placement, answer and ID bubble dimensions/centers, safe spacing, all layouts, all four orientations, perspective correction, student-ID decoding, blank/light/multiple/ambiguous marks, low contrast, uneven light, blur/noise, and fail-closed invalid pages. The supplied camera image remains a regression fixture and is rejected when its marks do not meet V3 geometry. Tests are synthetic; physical accuracy has not been measured.
 
 These are PDF-rendered synthetic marks, not photographs of physically printed sheets. No physical-printer/camera accuracy claim is made. Test printed sheets under varied lighting and camera conditions before relying on grades in production.
