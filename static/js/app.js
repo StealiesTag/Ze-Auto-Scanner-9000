@@ -85,4 +85,98 @@ document.addEventListener('DOMContentLoaded', () => {
       if (progress) progress.hidden = false;
     });
   }
+
+  const automaticScanner = document.querySelector('#automatic-scanner');
+  if (automaticScanner) {
+    const statusUrl = automaticScanner.dataset.statusUrl;
+    const setText = (id, value) => {
+      const element = document.getElementById(id);
+      if (element) element.textContent = value;
+    };
+    const renderJobs = (jobs) => {
+      const body = document.getElementById('recent-captures');
+      if (!body) return;
+      body.replaceChildren();
+      if (!jobs.length) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 6;
+        cell.className = 'text-muted';
+        cell.textContent = 'No camera captures have been queued.';
+        row.append(cell);
+        body.append(row);
+        return;
+      }
+      jobs.forEach((job) => {
+        const row = document.createElement('tr');
+        [job.capture_id, job.captured_at ? new Date(job.captured_at).toLocaleString() : '', job.status,
+          job.student_number || '—', job.score || '—'].forEach((value, index) => {
+          const cell = document.createElement('td');
+          if (index === 0) {
+            const code = document.createElement('code');
+            code.textContent = value;
+            cell.append(code);
+          } else cell.textContent = value;
+          row.append(cell);
+        });
+        const action = document.createElement('td');
+        if (job.review_url) {
+          const link = document.createElement('a');
+          link.href = job.review_url;
+          link.textContent = 'Review draft';
+          action.append(link);
+        } else if (job.retry_url) {
+          const form = document.createElement('form');
+          form.method = 'post';
+          form.action = job.retry_url;
+          const csrf = document.querySelector('input[name="csrf_token"]');
+          if (csrf) {
+            const token = document.createElement('input');
+            token.type = 'hidden';
+            token.name = 'csrf_token';
+            token.value = csrf.value;
+            form.append(token);
+          }
+          const button = document.createElement('button');
+          button.className = 'btn btn-sm btn-outline-primary';
+          button.textContent = 'Retry';
+          form.append(button);
+          action.append(form);
+        } else if (job.error) action.textContent = job.error;
+        row.append(action);
+        body.append(row);
+      });
+    };
+    const pollScanner = async () => {
+      try {
+        const response = await fetch(statusUrl, { headers: { Accept: 'application/json' } });
+        const data = await response.json();
+        if (!data.ok) {
+          setText('camera-error', data.error || 'Scanner status unavailable.');
+          return;
+        }
+        setText('camera-connected', data.camera_connected ? 'Connected' : 'Disconnected');
+        setText('sheet-detected', data.sheet_detected ? 'Yes' : 'No');
+        setText('marker-valid', data.marker_status?.valid ? 'Yes' : 'No');
+        setText('alignment-status', data.marker_status?.geometry_valid ? 'Valid' : 'Not validated');
+        setText('bottom-markers', data.marker_status?.bottom_markers_visible ? 'Yes' : 'No');
+        setText('page-visible', data.marker_status?.sheet_sufficiently_visible ? 'Yes' : 'No');
+        setText('stability', data.stability_status ? 'Yes' : 'No');
+        setText('capture-state', data.state || '—');
+        setText('camera-error', data.last_error || '');
+        Object.entries(data.queue || {}).forEach(([key, value]) => {
+          if (key === 'capacity_limit') return;
+          if (key === 'capacity') {
+            setText('queue-capacity', value + ' / ' + (data.queue.capacity_limit ?? '—'));
+          } else setText('queue-' + key.toLowerCase(), value);
+        });
+        renderJobs(data.recent_captures || []);
+      } catch (_error) {
+        setText('camera-connected', 'Disconnected');
+        setText('camera-error', 'Could not retrieve scanner status. Check the app and database connection.');
+      }
+    };
+    pollScanner();
+    window.setInterval(pollScanner, 2000);
+  }
 });

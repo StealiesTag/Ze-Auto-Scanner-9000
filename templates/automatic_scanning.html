@@ -1,0 +1,78 @@
+{% extends 'base.html' %}
+{% block title %}Automatic scanning{% endblock %}
+{% block content %}
+<div id="automatic-scanner" data-status-url="{{ url_for('automatic_scanning.status') }}">
+  <section class="card">
+    <p class="eyebrow">ESP32 CAMERA · V3 CAPTURE QUEUE</p>
+    <h1>Automatic scanning</h1>
+    <p class="text-muted">The live MJPEG feed is used for marker and sheet-transition checks. A separate high-resolution still is captured only after a stable replacement event.</p>
+    {% if migration_pending %}
+    <div class="alert alert-warning">Automatic scanning storage is not installed. Review and apply Alembic migrations through <code>20261101_0004</code> before using this page. Manual image upload remains available.</div>
+    {% else %}
+    <div class="row g-3">
+      <div class="col-lg-8">
+        {% if stream_url %}<img class="img-fluid border rounded w-100" id="esp32-preview" src="{{ stream_url }}" alt="ESP32 live MJPEG camera preview">
+        {% else %}<div class="alert alert-secondary">Set <code>ESP32_STREAM_URL</code> to show the camera preview.</div>{% endif %}
+      </div>
+      <div class="col-lg-4">
+        <h2 class="h5">Camera and detector</h2>
+        <dl class="row small">
+          <dt class="col-7">Camera</dt><dd class="col-5" id="camera-connected">{{ 'Connected' if control and control.camera_connected else 'Disconnected' }}</dd>
+          <dt class="col-7">Sheet detected</dt><dd class="col-5" id="sheet-detected">{{ 'Yes' if control and control.sheet_detected else 'No' }}</dd>
+          <dt class="col-7">Four markers valid</dt><dd class="col-5" id="marker-valid">{{ 'Yes' if control and control.marker_status.get('valid') else 'No' }}</dd>
+          <dt class="col-7">Alignment geometry</dt><dd class="col-5" id="alignment-status">{{ 'Valid' if control and control.marker_status.get('geometry_valid') else 'Not validated' }}</dd>
+          <dt class="col-7">Bottom markers visible</dt><dd class="col-5" id="bottom-markers">{{ 'Yes' if control and control.marker_status.get('bottom_markers_visible') else 'No' }}</dd>
+          <dt class="col-7">Page in frame</dt><dd class="col-5" id="page-visible">{{ 'Yes' if control and control.marker_status.get('sheet_sufficiently_visible') else 'No' }}</dd>
+          <dt class="col-7">Stable</dt><dd class="col-5" id="stability">{{ 'Yes' if control and control.stability_status else 'No' }}</dd>
+          <dt class="col-7">Capture state</dt><dd class="col-5" id="capture-state">{{ control.state if control else 'WAITING_FOR_FIRST_SHEET' }}</dd>
+        </dl>
+        <p class="small text-danger" id="camera-error">{{ control.last_error if control and control.last_error else '' }}</p>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+  {% if not migration_pending %}
+  <section class="card">
+    <h2>Capture controls</h2>
+    <form method="post" action="{{ url_for('automatic_scanning.start') }}" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-md-8"><label class="form-label" for="assessment_id">Assessment and V3 answer key</label>
+        <select class="form-select" id="assessment_id" name="assessment_id" required>
+          <option value="">Select assessment</option>
+          {% for item in assessments %}<option value="{{ item.id }}" {% if selected_assessment == item.id %}selected{% endif %}>{{ item.title }} · {{ item.total_questions }} questions · {{ item.class_section }}</option>{% endfor %}
+        </select>
+      </div><div class="col-md-4"><button class="btn btn-primary w-100" type="submit">Start automatic scanning</button></div>
+    </form>
+    <div class="d-flex gap-2 mt-3 flex-wrap">
+      <form method="post" action="{{ url_for('automatic_scanning.pause') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-warning" {% if not control or not control.active or control.paused %}disabled{% endif %}>Pause</button></form>
+      <form method="post" action="{{ url_for('automatic_scanning.resume') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-success" {% if not control or not control.active or not control.paused %}disabled{% endif %}>Resume</button></form>
+      <form method="post" action="{{ url_for('automatic_scanning.stop') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-danger" {% if not control or not control.active %}disabled{% endif %}>Stop</button></form>
+      <form method="post" action="{{ url_for('automatic_scanning.manual_capture') }}" class="d-flex gap-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <select class="form-select" name="assessment_id" aria-label="Assessment for manual capture">
+          {% for item in assessments %}<option value="{{ item.id }}" {% if selected_assessment == item.id %}selected{% endif %}>{{ item.title }} ({{ item.total_questions }})</option>{% endfor %}
+        </select><button class="btn btn-outline-primary" {% if control and control.active and not control.paused %}disabled{% endif %}>Manual camera capture</button>
+      </form>
+    </div>
+    <p class="small text-muted mt-3 mb-0">The Flask server and the single consumer worker are separate processes. Start the worker with <code>python -m services.scan_worker</code>. When the queue reaches its limit, auto capture pauses before requesting another still.</p>
+  </section>
+  <section class="card">
+    <h2>Processing queue</h2>
+    <div class="stats-grid">
+      {% for state, label in [('QUEUED','Queued'),('PROCESSING','Processing'),('NEEDS_REVIEW','Needs review'),('COMPLETED','Completed'),('FAILED','Failed')] %}
+      <div class="stat-box"><span class="label">{{ label }}</span><strong id="queue-{{ state|lower }}">{{ counts.get(state, 0) }}</strong></div>
+      {% endfor %}
+      <div class="stat-box"><span class="label">Pending / capacity limit</span><strong id="queue-capacity">{{ counts.get('capacity', 0) }} / {{ config.get('CAPTURE_QUEUE_CAPACITY', 25) }}</strong></div>
+    </div>
+  </section>
+  <section class="card"><h2>Recent captures</h2>
+    <div class="table-responsive"><table class="table"><thead><tr><th>Capture ID</th><th>Captured</th><th>Status</th><th>Student ID</th><th>Assessment result</th><th>Action / reason</th></tr></thead>
+      <tbody id="recent-captures">
+      {% for job in jobs %}<tr><td><code>{{ job.capture_id }}</code></td><td>{{ job.captured_at.strftime('%Y-%m-%d %H:%M:%S UTC') if job.captured_at else '' }}</td><td>{{ job.status }}</td><td>{{ job.draft.detected_student_number if job.draft else job.submission.student.student_number if job.submission else '—' }}</td><td>{{ job.submission.score|string ~ '/' ~ job.submission.total_points|string if job.submission else '—' }}</td><td>{% if job.draft %}<a href="{{ url_for('scanning.review_v3_draft', draft_id=job.draft.id) }}">Review draft</a>{% elif job.status == 'FAILED' %}<form method="post" action="{{ url_for('automatic_scanning.retry_capture', job_id=job.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-primary">Retry</button></form><span class="text-danger">{{ job.error_message }}</span>{% elif job.submission %}<a href="{{ url_for('scanning.review_submission', submission_id=job.submission.id) }}">View result</a>{% endif %}</td></tr>
+      {% else %}<tr><td colspan="6" class="text-muted">No camera captures have been queued.</td></tr>{% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

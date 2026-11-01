@@ -26,11 +26,11 @@ This project is a modular Flask application for automated answer-sheet scanning,
 
 ## MVP status
 
-The local MVP supports student records and CSV import, assessment and answer-key editing, Paparazzi Standard V3 sheet downloads and staged OMR review, PostgreSQL submission persistence, teacher correction history, and class analytics with configured-resource recommendations. V3 templates and their source JSON profile are stored unchanged under `static/answer_sheets/v3/`; measured vector origins are in a separate addendum. Recognition is validated on PDF-derived synthetic images, while physical print/camera validation remains outstanding. See [docs/paparazzi-standard-v3.md](docs/paparazzi-standard-v3.md) for geometry, migration, and validation status.
+The local MVP supports student records and CSV import, assessment and answer-key editing, Paparazzi Standard V3 sheet downloads and staged OMR review, PostgreSQL submission persistence, teacher correction history, class analytics, optional AI teaching suggestions, and an ESP32 capture queue. V3 templates and their source JSON profile are stored unchanged under `static/answer_sheets/v3/`; measured vector origins are in a separate addendum. Scanner/camera behavior is validated with synthetic frames only; physical printer, camera, and ejector validation remain outstanding. See the V3 and [ESP32 scanning docs](docs/esp32-automatic-scanning.md) for geometry, migration, and validation status.
 
-The Flask factory registers models before Flask-Migrate inspects metadata. PostgreSQL via Psycopg 3 is required; SQLite is rejected. Alembic revisions are `20261026_0001` and `20261101_0002`; the latter adds optional choice E and V3 scan drafts without changing existing answer data. Back up any existing database before applying migrations.
+The Flask factory registers models before Flask-Migrate inspects metadata. PostgreSQL via Psycopg 3 is required; SQLite is rejected. Revisions `20261101_0003` and `20261101_0004` add AI suggestion storage and the durable ESP32 scan queue. Back up and inspect any existing database before applying migrations.
 
-This is a local, single-teacher MVP. It does not include authentication, production deployment safeguards, ESP32/Canvas integration, handwriting recognition, or written-answer grading.
+This is a local, single-teacher MVP. It does not include authentication, production deployment safeguards, Canvas integration, handwriting recognition, or written-answer grading. ESP32 integration is software-only and still needs physical validation.
 
 ## Local setup
 
@@ -79,12 +79,32 @@ MAX_IMAGE_DIMENSION=8000
 OMR_FILL_THRESHOLD=0.18
 OMR_AMBIGUITY_MARGIN=0.10
 RECOMMENDATION_ERROR_THRESHOLD=0.40
+AI_BASE_URL=https://api.openai.com/v1
+AI_MODEL=your-json-capable-model
+AI_API_KEY=your-provider-key
+AI_TIMEOUT_SECONDS=30
+ESP32_STREAM_URL=http://192.168.1.80:81/stream
+ESP32_CAPTURE_URL=http://192.168.1.80/capture
+ESP32_REQUEST_TIMEOUT_SECONDS=8
+CAMERA_POLL_INTERVAL_SECONDS=0.2
+CAMERA_STABLE_FRAME_COUNT=5
+CAMERA_BOTTOM_MISSING_FRAME_COUNT=5
+CAMERA_MARKER_MOVEMENT_TOLERANCE_PX=3.0
+CAMERA_MIN_PAGE_CHANGE_RATIO=0.0015
+CAMERA_MIN_PAGE_AREA_RATIO=0.25
+CAPTURE_QUEUE_CAPACITY=25
 FLASK_ENV=development
 HOST=127.0.0.1
 PORT=5000
 ```
 
 Keep `.env` out of Git; the repository already ignores it.
+
+AI Teaching Insights are generated only on demand from aggregated finalized assessment results. Student names, student numbers, and submission IDs are excluded from provider requests. Without `AI_API_KEY` and `AI_MODEL`, generation remains unavailable while deterministic analytics continue to work. Configure an OpenAI-compatible chat-completions endpoint with `AI_BASE_URL`; verify the provider's data-handling terms before enabling it for student assessment information. Generated materials are suggestions for teacher review and are cached by the analytics data version. The feature requires the `20261101_0003` migration before use; apply it only after taking a database backup and reviewing the migration.
+
+See [AI Teaching Insights setup and migration notes](docs/ai-teaching-insights.md) for the complete data flow and deployment steps.
+
+ESP32 automatic capture requires migrations through `20261101_0004`, configured stream/still URLs, and the separate `python -m services.scan_worker` process. Its transition logic is not physically validated; see [ESP32 automatic scanning](docs/esp32-automatic-scanning.md).
 
 ### 4) Apply the included migration
 

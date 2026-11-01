@@ -45,4 +45,42 @@
   </form>
   <div class="table-responsive mt-3"><table class="table"><thead><tr><th>Resource</th><th>Objective</th><th>Type</th></tr></thead><tbody>{% for resource in resources %}<tr><td><a href="{{ resource.url }}" target="_blank" rel="noopener noreferrer">{{ resource.title }}</a></td><td>{{ resource.learning_objective }}</td><td>{{ resource.resource_type|title }}</td></tr>{% else %}<tr><td colspan="3" class="text-muted">No learning resources have been configured.</td></tr>{% endfor %}</tbody></table></div>
 </section>
+<section class="card mt-3" id="ai-teaching-insights">
+  <p class="eyebrow">SUGGESTIONS BASED ON FINALIZED CLASS RESULTS</p>
+  <h2>AI Teaching Insights</h2>
+  {% if not selected_assessment %}
+    <p class="text-muted">Select an assessment above to review its privacy-conscious class summary and request suggestions.</p>
+  {% elif ai_payload %}
+    <p>AI suggestions are generated only when requested and are clearly separate from deterministic analytics. Student names and IDs are not included. The teacher reviews all generated materials before use.</p>
+    <div class="alert {{ 'alert-success' if ai_configured and ai_storage_ready else 'alert-secondary' }}">
+      {% if not ai_storage_ready %}Teaching-suggestion storage migration is pending. Existing analytics remain available; generation is disabled until migration 20261101_0003 is applied.{% else %}
+      {% if ai_configured %}AI provider configured. Requests are sent only after you choose Generate.{% else %}AI provider unavailable. Configure <code>AI_API_KEY</code> and <code>AI_MODEL</code> to enable generation. Analytics and learning-gap detection remain available.{% endif %}
+      {% if ai_payload.assessment.finalized_submission_count == 0 %} No finalized submissions are available, so recommendations will be limited.{% endif %}
+      {% endif %}
+    </div>
+    <h3 class="h5">Deterministic learning-gap signals</h3>
+    <ul>{% for gap in ai_gaps.gaps %}<li>Q{{ gap.question_numbers|join(', Q') }}{% if gap.learning_objective %} · {{ gap.learning_objective }}{% else %} · topic metadata unavailable{% endif %} · {{ gap.type|replace('_',' ')|title }}{% if gap.accuracy_percent is defined %} {{ '%.1f'|format(gap.accuracy_percent) }}% accuracy{% endif %}{% if gap.blank_percent is defined %} {{ '%.1f'|format(gap.blank_percent) }}% blank{% endif %}</li>{% else %}<li>No significant low-accuracy or high-blank signals in finalized results.</li>{% endfor %}</ul>
+    {% if ai_gaps.strengths %}<p><strong>Demonstrated understanding:</strong> {% for item in ai_gaps.strengths %}Q{{ item.question_number }}{% if item.learning_objective %} ({{ item.learning_objective }}){% endif %}: {{ item.accuracy_percent }}%{% if not loop.last %}; {% endif %}{% endfor %}</p>{% endif %}
+    {% if ai_gaps.missing_topic_question_numbers %}<p class="small text-muted">No learning-objective metadata for question(s) {{ ai_gaps.missing_topic_question_numbers|join(', ') }}. Any interpretation of those items is limited.</p>{% endif %}
+    {% if ai_storage_ready %}<div class="row g-3">
+      {% for kind, label in [('insights','Generate teaching insights'),('lesson','Generate lesson plan'),('remediation','Generate remediation activities')] %}
+      <div class="col-lg-4"><form method="post" action="{{ url_for('analytics.generate_ai_output') }}" class="card h-100">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="assessment_id" value="{{ selected_assessment }}"><input type="hidden" name="kind" value="{{ kind }}">
+        {% if kind == 'lesson' %}<label class="form-label" for="lesson-duration">Lesson duration</label><select class="form-select mb-2" id="lesson-duration" name="duration_minutes"><option>15</option><option selected>30</option><option>45</option><option>60</option></select>{% endif %}
+        {% if kind == 'remediation' %}<label class="form-label" for="selected-gaps">Focus objectives (optional)</label><select class="form-select mb-2" id="selected-gaps" name="selected_gap" multiple>{% for gap in ai_gaps.gaps if gap.learning_objective %}<option value="{{ gap.learning_objective }}">{{ gap.learning_objective }}</option>{% endfor %}</select><div class="form-text mb-2">Leave blank to include the highest-priority gaps.</div>{% endif %}
+        <button class="btn btn-primary mt-auto" {% if not ai_configured %}disabled{% endif %}>{{ label }}</button>
+      </form></div>
+      {% endfor %}
+    </div>{% endif %}
+    {% for item in ai_outputs %}
+    <div class="border rounded p-3 mt-3"><h3 class="h5">{{ {'insights':'AI Teaching Insights','lesson':'AI Lesson Plan','remediation':'AI Remediation Activities'}[item.kind] }}{% if item.teacher_saved %} <span class="badge text-bg-success">Teacher saved</span>{% else %} <span class="badge text-bg-info">Suggestion</span>{% endif %}</h3>
+      {% if item.kind == 'insights' %}<form method="post" action="{{ url_for('analytics.generate_ai_output') }}" class="mb-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="assessment_id" value="{{ selected_assessment }}"><input type="hidden" name="kind" value="insights"><input type="hidden" name="regenerate" value="yes"><button class="btn btn-outline-secondary btn-sm">Regenerate insights</button></form>{% endif %}
+      {% if item.kind == 'lesson' %}<p class="small text-muted">{{ item.duration_minutes }} minutes · Edit the structured suggestion below before saving or using it.</p>{% else %}<p class="small text-muted">Edit the structured suggestion below before saving or using it.</p>{% endif %}
+      <form method="post" action="{{ url_for('analytics.save_ai_output', insight_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label class="form-label" for="ai-output-{{ item.id }}">Editable suggestion (JSON)</label><textarea class="form-control font-monospace" rows="12" id="ai-output-{{ item.id }}" name="output_json" required>{{ item.output|tojson(indent=2) }}</textarea><button class="btn btn-outline-primary mt-2">Save edited suggestion</button></form>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="alert alert-secondary">Teaching-suggestion storage migration is pending. Existing deterministic analytics remain available; apply migration <code>20261101_0003</code> after backup and approval to enable AI suggestions.</div>
+  {% endif %}
+</section>
 {% endblock %}

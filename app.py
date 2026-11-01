@@ -33,6 +33,15 @@ def create_app(config_name: str = "default") -> Flask:
         raise RuntimeError("RECOMMENDATION_ERROR_THRESHOLD must be greater than 0 and no greater than 1.")
     if not 0 < app.config["OMR_FILL_THRESHOLD"] <= 1 or not 0 <= app.config["OMR_AMBIGUITY_MARGIN"] <= 1:
         raise RuntimeError("OMR thresholds must be ratios between 0 and 1.")
+    if (app.config["CAMERA_STABLE_FRAME_COUNT"] < 2
+            or app.config["CAMERA_BOTTOM_MISSING_FRAME_COUNT"] < 2
+            or app.config["CAMERA_MARKER_MOVEMENT_TOLERANCE_PX"] < 0
+            or not 0 < app.config["CAMERA_MIN_PAGE_CHANGE_RATIO"] <= 1
+            or not 0 < app.config["CAMERA_MIN_PAGE_AREA_RATIO"] <= 1
+            or app.config["CAMERA_POLL_INTERVAL_SECONDS"] <= 0
+            or app.config["ESP32_REQUEST_TIMEOUT_SECONDS"] <= 0
+            or app.config["CAPTURE_QUEUE_CAPACITY"] < 1):
+        raise RuntimeError("Automatic scanning thresholds and queue capacity must be positive and within their documented ranges.")
 
     @app.errorhandler(413)
     def upload_too_large(_error):

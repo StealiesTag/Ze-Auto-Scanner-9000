@@ -18,7 +18,7 @@ All PDFs are single-page A4 portrait (210 × 297 mm). Their vector paths confirm
 
 `services/paparazzi_v3_scanner.py` loads the profile and measured origins, detects candidate square contours with Otsu and adaptive thresholding, checks four-corner arrangement and page aspect, tries four page rotations, and chooses the orientation with the strongest fit to the profile's printed bubble rings. It rectifies to A4 at 300 DPI. OMR uses a per-bubble local background ring to derive fill measurements, then reports detected, blank, multiple-mark, or ambiguous states and confidence. Seven ID columns are decoded with the same bubble scoring. Unmatched or unreadable IDs require manual student selection; assessment association is selected before upload because the printed handwritten assessment-code area is not OCR-read.
 
-The legacy ArUco/QR pipeline remains separate and unchanged. V3 uses a normalized image entry point for future sources; ESP32 integration is deferred.
+The legacy ArUco/QR pipeline remains separate and unchanged. Manual image upload and the optional ESP32 capture queue both feed the same V3 draft service. ESP32 software behavior and physical validation status are documented in [esp32-automatic-scanning.md](esp32-automatic-scanning.md).
 
 ## Database and review
 

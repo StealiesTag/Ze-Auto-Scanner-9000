@@ -27,16 +27,16 @@ def _save_image(folder: Path, image, name: str) -> str:
     return name
 
 
-def create_v3_scan_draft(file_storage, app_config, assessment: Assessment, question_count: int, selected_student_id=None) -> ScanDraft:
+def create_v3_scan_draft(file_storage, app_config, assessment: Assessment, question_count: int, selected_student_id=None, *, capture_id=None, original_filename=None) -> ScanDraft:
     image, _metadata = load_uploaded_image(
         file_storage,
         max_bytes=int(app_config["MAX_CONTENT_LENGTH"]),
         max_dimension=int(app_config["MAX_IMAGE_DIMENSION"]),
     )
-    return create_v3_scan_draft_from_image(image, app_config, assessment, question_count, selected_student_id)
+    return create_v3_scan_draft_from_image(image, app_config, assessment, question_count, selected_student_id, capture_id=capture_id, original_filename=original_filename)
 
 
-def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, question_count: int, selected_student_id=None) -> ScanDraft:
+def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, question_count: int, selected_student_id=None, *, capture_id=None, original_filename=None) -> ScanDraft:
     if question_count not in SUPPORTED_V3_QUESTION_COUNTS:
         raise ValueError("Choose a 20, 50, or 100 question V3 sheet.")
     questions = sorted(assessment.questions, key=lambda question: question.question_number)
@@ -74,10 +74,15 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
     folder = Path(app_config["UPLOAD_FOLDER"])
     folder.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
-    image_names = [f"{token}-original.png", f"{token}-v3-aligned.png", f"{token}-v3-debug.png"]
+    image_names = [original_filename or f"{token}-original.png", f"{token}-v3-aligned.png", f"{token}-v3-debug.png"]
     saved_names = []
     try:
-        saved_names.append(_save_image(folder, image, image_names[0]))
+        if original_filename:
+            original_path = (folder / original_filename).resolve()
+            if original_path.parent != folder.resolve() or not original_path.is_file():
+                raise OSError("The preserved camera capture could not be found.")
+        else:
+            saved_names.append(_save_image(folder, image, image_names[0]))
         saved_names.append(_save_image(folder, alignment.aligned_image, image_names[1]))
         debug = alignment.aligned_image.copy()
         for item in recognized_answers:
@@ -97,6 +102,7 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
             "matched_student_id": matched_student.id if matched_student else None,
             "matched_student_name": matched_student.name if matched_student else None,
             "student_id_unmatched": bool(student_id_detection["student_id"] and not matched_student),
+            "capture_id": capture_id,
         }
         draft = ScanDraft(
             assessment_id=assessment.id,
@@ -123,7 +129,7 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
 
 def confirm_v3_scan_draft(draft: ScanDraft, student: Student, final_answers: list[str | None]):
     from services.grading_service import grade_detections
-    from models import AnswerCorrection, Response, Submission
+    from models import AnswerCorrection, CaptureJob, Response, Submission
 
     assessment = draft.assessment
     questions = sorted(assessment.questions, key=lambda question: question.question_number)
@@ -185,6 +191,16 @@ def confirm_v3_scan_draft(draft: ScanDraft, student: Student, final_answers: lis
                 note="Teacher confirmation during V3 scan review.",
             ))
     db.session.add(submission)
+    capture_id = (draft.processing_notes or {}).get("capture_id")
+    if capture_id:
+        capture_job = db.session.scalar(select(CaptureJob).where(CaptureJob.capture_id == capture_id))
+        if capture_job is not None:
+            from datetime import datetime, timezone
+            db.session.flush()
+            capture_job.submission_id = submission.id
+            capture_job.status = "COMPLETED"
+            capture_job.completed_at = datetime.now(timezone.utc)
+            capture_job.error_message = None
     db.session.delete(draft)
     try:
         db.session.commit()
