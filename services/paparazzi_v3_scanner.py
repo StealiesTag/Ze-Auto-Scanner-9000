@@ -16,6 +16,7 @@ from services.image_processor import ImageProcessingError
 ASSET_DIR = Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "v3" / "Paparazzi_Answer_Sheets_V3_Package"
 PROFILE_PATH = ASSET_DIR / "Paparazzi_Standard_V3_Profile.json"
 ORIGINS_PATH = ASSET_DIR / "Paparazzi_Standard_V3_Vector_Origins.json"
+LARGE_BUBBLE_50_PROFILE_PATH = ASSET_DIR / "Paparazzi_50Q_Large_Bubble_Profile.json"
 CANONICAL_DPI = 300
 
 
@@ -27,10 +28,11 @@ class V3AlignmentResult:
     blur_score: float
     orientation: str
     warnings: list[str]
+    layout_score: float = 0.0
 
 
-@lru_cache(maxsize=1)
-def load_v3_profile() -> dict:
+@lru_cache(maxsize=2)
+def load_v3_profile(profile_variant: str = "standard") -> dict:
     profile = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     origins = json.loads(ORIGINS_PATH.read_text(encoding="utf-8"))
     if profile.get("format") != "Paparazzi Standard" or profile.get("version") != origins.get("version"):
@@ -39,6 +41,18 @@ def load_v3_profile() -> dict:
     profile["answers"].update(origins["answers"])
     for question_count, column_origins in origins["answers"]["column_first_bubble_x_mm_by_question_count"].items():
         profile["answers"]["layouts"][question_count]["column_first_bubble_x_mm"] = column_origins
+    if profile_variant == "50q_large_bubble":
+        variant = json.loads(LARGE_BUBBLE_50_PROFILE_PATH.read_text(encoding="utf-8"))
+        profile["profile_variant"] = variant["profile_variant"]
+        profile["student_id"].update(variant.get("student_id", {}))
+        profile["answers"]["bubble_radius_mm"] = variant["answers"]["bubble_radius_mm"]
+        profile["answers"]["choice_pitch_mm"] = variant["answers"]["choice_pitch_mm"]
+        profile["answers"]["row_pitch_mm"] = variant["answers"]["row_pitch_mm"]
+        profile["answers"]["layouts"]["50"].update(variant["answers"]["layouts"]["50"])
+    elif profile_variant != "standard":
+        raise ValueError(f"Unknown Paparazzi V3 profile variant: {profile_variant}")
+    else:
+        profile["profile_variant"] = "standard"
     return profile
 
 
@@ -62,14 +76,25 @@ def get_answer_bubble_centers_mm(question_count: int, profile: dict | None = Non
         raise ValueError("Paparazzi Standard V3 supports 20, 50, or 100 questions.")
     choices = profile["answers"]["choices"]
     column_x = layout["column_first_bubble_x_mm"]
-    first_y = profile["answers"]["first_row_center_y_mm"]
+    first_y = profile["answers"].get("first_row_center_y_mm", 0.0)
     row_pitch = profile["answers"]["row_pitch_mm"]
     choice_pitch = profile["answers"]["choice_pitch_mm"]
     result = {}
     for question_index in range(question_count):
-        column_index, row_index = divmod(question_index, layout["rows_per_column"])
+        counts = layout.get("questions_per_column")
+        if counts:
+            column_index = 0
+            offset = question_index
+            while column_index < len(counts) - 1 and offset >= counts[column_index]:
+                offset -= counts[column_index]
+                column_index += 1
+            row_index = offset
+        else:
+            column_index, row_index = divmod(question_index, layout["rows_per_column"])
+        row_centers = layout.get("row_centers_y_mm_by_column")
+        row_y = row_centers[column_index][row_index] if row_centers else first_y + row_index * row_pitch
         result[question_index + 1] = [
-            (column_x[column_index] + choice_index * choice_pitch, first_y + row_index * row_pitch)
+            (column_x[column_index] + choice_index * choice_pitch, row_y)
             for choice_index, _choice in enumerate(choices)
         ]
     return result
@@ -255,9 +280,10 @@ def _mm_to_pixel(point: tuple[float, float], pixels_per_mm_x: float, pixels_per_
 def _layout_match_score(gray: np.ndarray, question_count: int, profile: dict) -> float:
     px_x = gray.shape[1] / profile["paper"]["width_mm"]
     px_y = gray.shape[0] / profile["paper"]["height_mm"]
-    centers = [point for column in get_student_id_bubble_centers_mm(profile) for point in column]
+    id_centers = [] if not profile["student_id"].get("auto_detect_enabled", True) else [point for column in get_student_id_bubble_centers_mm(profile) for point in column]
+    centers = list(id_centers)
     centers.extend(point for row in get_answer_bubble_centers_mm(question_count, profile).values() for point in row)
-    radii = [profile["student_id"]["bubble_radius_mm"]] * 70 + [profile["answers"]["bubble_radius_mm"]] * (question_count * len(profile["answers"]["choices"]))
+    radii = [profile["student_id"]["bubble_radius_mm"]] * len(id_centers) + [profile["answers"]["bubble_radius_mm"]] * (question_count * len(profile["answers"]["choices"]))
     values = []
     for (x_mm, y_mm), radius_mm in zip(centers, radii):
         x, y = round(x_mm * px_x), round(y_mm * px_y)
@@ -267,7 +293,7 @@ def _layout_match_score(gray: np.ndarray, question_count: int, profile: dict) ->
         region = gray[y0:y1, x0:x1]
         yy, xx = np.ogrid[y0:y1, x0:x1]
         distance = np.sqrt(((xx - x) / radius) ** 2 + ((yy - y) / radius) ** 2)
-        ring = region[(distance >= 0.82) & (distance <= 1.18)]
+        ring = region[(distance >= 0.88) & (distance <= 1.12)]
         if ring.size:
             values.append(float(np.mean(ring < 185)))
     return float(np.mean(values)) if values else 0.0
@@ -322,10 +348,37 @@ def align_paparazzi_v3(image: np.ndarray, profile: dict | None = None, question_
     warnings = []
     if blur_score < 18.0:
         warnings.append("The rectified page appears blurred; answers require careful manual review.")
-    return V3AlignmentResult(aligned, debug, [tuple(map(float, point)) for point in source], blur_score, f"rotation_{shift * 90}", warnings)
+    return V3AlignmentResult(aligned, debug, [tuple(map(float, point)) for point in source], blur_score, f"rotation_{shift * 90}", warnings, match_score)
 
 
-def _bubble_fill_score(gray: np.ndarray, center_mm: tuple[float, float], radius_mm: float) -> float:
+def align_paparazzi_v3_auto(image: np.ndarray, question_count: int) -> tuple[dict, V3AlignmentResult]:
+    """Choose the best supported V3 layout using its printed bubble geometry."""
+    profiles = [load_v3_profile()]
+    if question_count == 50:
+        profiles.append(load_v3_profile("50q_large_bubble"))
+    candidates = []
+    errors = []
+    for profile in profiles:
+        try:
+            alignment = align_paparazzi_v3(image, profile, question_count=question_count)
+            candidates.append((alignment.layout_score, profile, alignment))
+        except ImageProcessingError as error:
+            errors.append(error)
+    if not candidates:
+        raise errors[0]
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 0.015:
+        raise ImageProcessingError("The answer-sheet layout is ambiguous between the standard and large-bubble 50-question templates.")
+    _score, profile, alignment = candidates[0]
+    return profile, alignment
+
+
+def _bubble_fill_score(
+    gray: np.ndarray,
+    center_mm: tuple[float, float],
+    radius_mm: float,
+    background_pitch_mm: float | None = None,
+) -> float:
     pixels_per_mm_x = gray.shape[1] / 210.0
     pixels_per_mm_y = gray.shape[0] / 297.0
     x, y = round(center_mm[0] * pixels_per_mm_x), round(center_mm[1] * pixels_per_mm_y)
@@ -337,7 +390,13 @@ def _bubble_fill_score(gray: np.ndarray, center_mm: tuple[float, float], radius_
     yy, xx = np.ogrid[y0:y1, x0:x1]
     normalized = ((xx - x) / radius_x) ** 2 + ((yy - y) / radius_y) ** 2
     interior = region[normalized <= 0.62**2]
-    background = region[(normalized >= 1.28**2) & (normalized <= 1.72**2)]
+    ring_inner_ratio = 1.02
+    ring_outer_ratio = 1.72
+    if background_pitch_mm is not None:
+        ring_outer_ratio = min(ring_outer_ratio, max(0.0, (background_pitch_mm / 2.0 - 0.12) / radius_mm))
+    if ring_outer_ratio <= ring_inner_ratio:
+        return 0.0
+    background = region[(normalized >= ring_inner_ratio**2) & (normalized <= ring_outer_ratio**2)]
     if interior.size == 0 or background.size == 0:
         return 0.0
     local_background = float(np.median(background))
@@ -371,7 +430,12 @@ def detect_v3_answers(aligned_image: np.ndarray, question_count: int, profile: d
     choices = profile["answers"]["choices"]
     for question_number, question_centers in centers.items():
         values = {
-            choice: _bubble_fill_score(gray, question_centers[index], profile["answers"]["bubble_radius_mm"])
+            choice: _bubble_fill_score(
+                gray,
+                question_centers[index],
+                profile["answers"]["bubble_radius_mm"],
+                min(profile["answers"]["choice_pitch_mm"], profile["answers"]["row_pitch_mm"]),
+            )
             for index, choice in enumerate(choices)
         }
         results.append({
@@ -386,11 +450,24 @@ def detect_v3_student_id(aligned_image: np.ndarray, profile: dict | None = None)
     profile = profile or load_v3_profile()
     gray = preprocess_v3_image(aligned_image)
     section = profile["student_id"]
+    if not section.get("auto_detect_enabled", True):
+        return {
+            "student_id": None,
+            "status": "manual_required",
+            "confidence": 0.0,
+            "reason": section.get("manual_review_reason", "Student ID requires manual review."),
+            "digits": [],
+        }
     columns = get_student_id_bubble_centers_mm(profile)
     digits = []
     for column_number, centers in enumerate(columns, start=1):
         values = {
-            str(digit): _bubble_fill_score(gray, centers[digit], section["bubble_radius_mm"])
+            str(digit): _bubble_fill_score(
+                gray,
+                centers[digit],
+                section["bubble_radius_mm"],
+                min(section["column_pitch_mm"], section["row_pitch_mm"]),
+            )
             for digit in section["digit_values"]
         }
         ordered = sorted(((score, digit) for digit, score in values.items()), reverse=True)

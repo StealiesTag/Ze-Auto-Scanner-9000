@@ -11,6 +11,7 @@ from services.paparazzi_v3_scanner import (
     CANONICAL_DPI,
     _bubble_fill_score,
     align_paparazzi_v3,
+    align_paparazzi_v3_auto,
     classify_v3_bubbles,
     detect_v3_answers,
     detect_v3_student_id,
@@ -230,3 +231,49 @@ def test_v3_preprocessing_stages_are_configurable(monkeypatch):
     monkeypatch.setenv("PAPARAZZI_V3_DENOISE_MEDIAN_KERNEL", "0")
     monkeypatch.setenv("PAPARAZZI_V3_SHARPEN_AMOUNT", "0")
     assert np.array_equal(preprocess_v3_image(image), image)
+
+
+def _render_user_large_bubble_50q(dpi=240):
+    source = pymupdf.open(Path(__file__).resolve().parents[1] / "test_fixtures" / "Paparazzi_50Q_Large_Bubble_User.pdf")
+    pixels = source[0].get_pixmap(matrix=pymupdf.Matrix(dpi / 72, dpi / 72), alpha=False)
+    rgb = np.frombuffer(pixels.samples, dtype=np.uint8).reshape(pixels.height, pixels.width, pixels.n)
+    source.close()
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+
+def test_user_large_bubble_50q_pdf_selects_its_profile_and_keeps_id_manual():
+    image = _render_user_large_bubble_50q()
+    profile, aligned = align_paparazzi_v3_auto(image, 50)
+    assert profile["profile_variant"] == "50q_large_bubble"
+    assert aligned.orientation == "rotation_0"
+    assert aligned.layout_score > 0.5
+    assert len(aligned.detected_marks) == 4
+    assert detect_v3_student_id(aligned.aligned_image, profile)["status"] == "manual_required"
+    answers = detect_v3_answers(aligned.aligned_image, 50, profile)
+    assert len(answers) == 50
+    assert all(answer["status"] == "blank" for answer in answers)
+
+
+def test_user_large_bubble_50q_synthetic_fills_are_read_at_measured_centers():
+    image = _render_user_large_bubble_50q(dpi=300)
+    profile = load_v3_profile("50q_large_bubble")
+    expected = {number: "ABCDE"[(number - 1) % 5] for number in range(1, 51)}
+    centers = get_answer_bubble_centers_mm(50, profile)
+    pixels_per_mm_x = image.shape[1] / profile["paper"]["width_mm"]
+    pixels_per_mm_y = image.shape[0] / profile["paper"]["height_mm"]
+    for number, answer in expected.items():
+        x_mm, y_mm = centers[number]["ABCDE".index(answer)]
+        radius = round(profile["answers"]["bubble_radius_mm"] * min(pixels_per_mm_x, pixels_per_mm_y) * 0.68)
+        cv2.circle(image, (round(x_mm * pixels_per_mm_x), round(y_mm * pixels_per_mm_y)), radius, (25, 25, 25), -1)
+    chosen_profile, aligned = align_paparazzi_v3_auto(image, 50)
+    results = detect_v3_answers(aligned.aligned_image, 50, chosen_profile)
+    assert chosen_profile["profile_variant"] == "50q_large_bubble"
+    assert all(result["status"] == "detected" for result in results)
+    assert [result["answer"] for result in results] == list(expected.values())
+
+
+def test_auto_profile_selection_preserves_standard_v3_50q_layout():
+    image = _render_template(50)
+    profile, aligned = align_paparazzi_v3_auto(image, 50)
+    assert profile["profile_variant"] == "standard"
+    assert aligned.layout_score > 0.5

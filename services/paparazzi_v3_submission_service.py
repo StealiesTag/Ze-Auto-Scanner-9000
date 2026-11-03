@@ -11,10 +11,9 @@ from extensions import db
 from models import Assessment, ScanDraft, Student
 from services.image_processor import ImageProcessingError, load_uploaded_image
 from services.paparazzi_v3_scanner import (
-    align_paparazzi_v3,
+    align_paparazzi_v3_auto,
     detect_v3_answers,
     detect_v3_student_id,
-    load_v3_profile,
 )
 
 SUPPORTED_V3_QUESTION_COUNTS = {20, 50, 100}
@@ -47,8 +46,7 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
     if any(question.correct_answer not in {"A", "B", "C", "D", "E"} for question in questions):
         raise ValueError("The answer key contains an invalid V3 answer choice.")
 
-    profile = load_v3_profile()
-    alignment = align_paparazzi_v3(image, profile, question_count=question_count)
+    profile, alignment = align_paparazzi_v3_auto(image, question_count)
     student_id_detection = detect_v3_student_id(alignment.aligned_image, profile)
     recognized_answers = detect_v3_answers(alignment.aligned_image, question_count, profile)
 
@@ -99,6 +97,7 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
             "blur_score": alignment.blur_score,
             "orientation": alignment.orientation,
             "profile_version": profile["version"],
+            "profile_variant": profile.get("profile_variant", "standard"),
             "matched_student_id": matched_student.id if matched_student else None,
             "matched_student_name": matched_student.name if matched_student else None,
             "student_id_unmatched": bool(student_id_detection["student_id"] and not matched_student),

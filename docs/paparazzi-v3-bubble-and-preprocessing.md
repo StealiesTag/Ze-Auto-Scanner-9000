@@ -12,7 +12,13 @@ The scanner converts captures to grayscale, corrects broad illumination gradient
 
 The preprocessing defaults can be tuned with environment variables: `PAPARAZZI_V3_ILLUMINATION_CORRECTION`, `PAPARAZZI_V3_CLAHE_ENABLED`, `PAPARAZZI_V3_CLAHE_CLIP_LIMIT`, `PAPARAZZI_V3_CLAHE_GRID_SIZE`, `PAPARAZZI_V3_DENOISE_MEDIAN_KERNEL`, `PAPARAZZI_V3_SHARPEN_AMOUNT`, `PAPARAZZI_V3_SHARPEN_BLUR_THRESHOLD`, `PAPARAZZI_V3_THRESHOLD_OTSU`, `PAPARAZZI_V3_THRESHOLD_ADAPTIVE_GAUSSIAN`, `PAPARAZZI_V3_THRESHOLD_ADAPTIVE_MEAN`, and the adaptive block/C values. Each stage keeps its current tested default when unset.
 
-OMR uses the profile's enlarged answer radius while leaving the ID radius unchanged. Bubble scores measure dark coverage relative to a surrounding local-background ring. Blank, multiple, and near-tied uncertain responses remain unresolved for teacher review.
+OMR uses each selected profile's bubble dimensions and spacing, with a local-background ring constrained to avoid neighboring bubbles. Blank, multiple, and near-tied uncertain responses remain unresolved for teacher review.
+
+## User-supplied large-bubble 50Q sheet
+
+The supplied Canva 50Q PDF keeps the A4 page and four V3 corner markers, but its answer grid differs from the standard 25/25 layout. The scanner compares both profiles after marker-based rectification and selects the one that best matches the printed bubble locations. The supplemental geometry is in `Paparazzi_50Q_Large_Bubble_Profile.json`: 20 questions in the left block, 30 in the right block, 3.81 mm answer-bubble radius, and measured row/choice centers. The standard V3 profile remains available for the original 50Q sheet.
+
+The supplied sheet's student ID block is not used for automatic ID recognition; digits require teacher selection during review. Answer detection remains automatic with the usual blank, multiple-mark, and uncertain states. The PDF is retained as `test_fixtures/Paparazzi_50Q_Large_Bubble_User.pdf` for regression tests. No physical photograph has been validated with this format yet.
 
 ## Verification and limits
 
