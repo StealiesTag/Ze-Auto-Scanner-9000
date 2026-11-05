@@ -1,9 +1,38 @@
 {
   "profile_variant": "50q_large_bubble",
-  "source_description": "User-supplied Answer_Sheet_50Q_V3.pdf.pdf, measured from its rasterized page and text positions.",
+  "source_description": "Revised 50-question large-bubble sheet with a normalized seven-column, 0-9 student ID grid.",
   "student_id": {
-    "auto_detect_enabled": false,
-    "manual_review_reason": "This custom sheet's ID grid does not provide a complete, consistently spaced 0-9 row set; require teacher selection."
+    "auto_detect_enabled": true,
+    "digits": 7,
+    "digit_values": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "columns_labeled": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "encoding": "one digit per column from left to right",
+    "bubble_radius_mm": 3.05,
+    "column_pitch_mm": 11.25,
+    "row_pitch_mm": 7.8,
+    "first_bubble_center_mm": [
+      21.0,
+      19.01
+    ]
   },
   "answers": {
     "bubble_radius_mm": 3.81,
@@ -13,22 +42,68 @@
       "50": {
         "columns": 2,
         "rows_per_column": 30,
-        "questions_per_column": [20, 30],
-        "column_first_bubble_x_mm": [24.342, 116.628],
+        "questions_per_column": [
+          20,
+          30
+        ],
+        "column_first_bubble_x_mm": [
+          24.342,
+          116.628
+        ],
         "row_centers_y_mm_by_column": [
           [
-            109.643, 118.279, 127.000, 135.636, 144.441,
-            153.077, 161.713, 170.434, 179.070, 187.791,
-            196.681, 205.317, 214.037, 222.673, 231.479,
-            240.115, 248.751, 257.471, 266.107, 274.828
+            109.643,
+            118.279,
+            127.0,
+            135.636,
+            144.441,
+            153.077,
+            161.713,
+            170.434,
+            179.07,
+            187.791,
+            196.681,
+            205.317,
+            214.037,
+            222.673,
+            231.479,
+            240.115,
+            248.751,
+            257.471,
+            266.107,
+            274.828
           ],
           [
-            21.421, 30.057, 38.777, 47.413, 56.219,
-            64.855, 73.491, 82.211, 90.847, 99.568,
-            108.458, 117.094, 125.815, 134.451, 143.171,
-            151.892, 160.528, 169.249, 177.885, 186.605,
-            195.157, 203.793, 212.513, 221.149, 229.870,
-            238.506, 247.142, 255.863, 264.499, 273.304
+            21.421,
+            30.057,
+            38.777,
+            47.413,
+            56.219,
+            64.855,
+            73.491,
+            82.211,
+            90.847,
+            99.568,
+            108.458,
+            117.094,
+            125.815,
+            134.451,
+            143.171,
+            151.892,
+            160.528,
+            169.249,
+            177.885,
+            186.605,
+            195.157,
+            203.793,
+            212.513,
+            221.149,
+            229.87,
+            238.506,
+            247.142,
+            255.863,
+            264.499,
+            273.304
           ]
         ]
       }

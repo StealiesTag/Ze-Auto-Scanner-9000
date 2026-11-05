@@ -5,6 +5,7 @@
   <a href="{{ url_for('assessment.list_assessments') }}">&larr; Assessments</a>
   <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mt-3"><div><h1>{{ assessment.title }}</h1><p class="text-muted">{{ assessment.subject }} · {{ assessment.class_section }} · {{ assessment.questions|length }} questions</p></div>
   {% if not assessment.submissions %}<a class="btn btn-outline-secondary" href="{{ url_for('assessment.edit_assessment', assessment_id=assessment.id) }}">Edit answer key</a>{% endif %}</div>
+  {% if assessment.source_pdf_filename %}<p class="mb-3">Original assessment: <a href="{{ url_for('assessment.source_pdf', assessment_id=assessment.id) }}">{{ assessment.source_pdf_filename }}</a> · question text extracted for teaching suggestions · {{ assessment.source_pdf_page_count }} pages. <a href="{{ url_for('assessment.question_mapping', assessment_id=assessment.id) }}">Review question-to-PDF mappings</a>.</p>{% else %}<p class="small text-muted">No original test PDF attached yet. Edit this assessment to add one.</p>{% endif %}
   <h2>Answer key</h2><div class="table-responsive"><table class="table"><thead><tr><th>#</th><th>Prompt</th><th>Correct</th><th>Points</th><th>Objective</th></tr></thead><tbody>
     {% for question in assessment.questions|sort(attribute='question_number') %}<tr><td>{{ question.question_number }}</td><td>{{ question.prompt }}<div class="small text-muted">A: {{ question.option_a }} · B: {{ question.option_b }} · C: {{ question.option_c }} · D: {{ question.option_d }}{% if question.option_e %} · E: {{ question.option_e }}{% endif %}</div></td><td>{{ question.correct_answer }}</td><td>{{ question.points }}</td><td>{{ question.learning_objective }}</td></tr>{% endfor %}
   </tbody></table></div>
@@ -14,7 +15,8 @@
   {% else %}<tr><td colspan="5" class="text-muted">No results recorded yet.</td></tr>{% endfor %}
 </tbody></table></div></section>
 <section class="card"><h2>Answer sheets</h2>
-  <p>This answer key has {{ assessment.questions|length }} questions. Download the matching Paparazzi Standard V3 sheet. Its question count must match the assessment before scanning.</p>
-  <a class="btn btn-primary" href="{{ url_for('answer_sheet.answer_sheets') }}">Download Paparazzi V3 sheets</a>
+  <p>This answer key has {{ assessment.questions|length }} questions. Download the matching official sheet before scanning.</p>
+  <a class="btn btn-primary" href="{{ url_for('answer_sheet.answer_sheets') }}">Download Paparazzi answer sheets</a>
+  {% if assessment.submissions %}<a class="btn btn-outline-primary" href="{{ url_for('canvas.assessment_setup', assessment_id=assessment.id) }}">Export grades to Canvas</a>{% endif %}
 </section>
 {% endblock %}

@@ -1,25 +1,30 @@
 {% extends 'base.html' %}
-{% block title %}Review V3 scan{% endblock %}
+{% block title %}Review answer sheet scan{% endblock %}
 {% block content %}
 <section class="card">
-  <p class="eyebrow">PAPARAZZI STANDARD V3 · REVIEW</p>
+  <p class="eyebrow">OFFICIAL PAPARAZZI SHEET - REVIEW</p>
   <h1>Review detected sheet</h1>
   <p class="text-muted">{{ draft.assessment.title }} · {{ draft.question_count }} questions · profile {{ draft.profile_version }}</p>
   {% if draft.processing_notes.get('warnings') %}<div class="alert alert-warning">{{ draft.processing_notes.get('warnings')|join(' ') }}</div>{% endif %}
   {% if draft.processing_notes.get('blur_score', 0) < 18 %}<div class="alert alert-warning">The scan may be blurred. Check every answer before grading.</div>{% endif %}
   <dl class="row">
     <dt class="col-sm-3">Detected student ID</dt><dd class="col-sm-9">{{ draft.detected_student_number or 'Not confidently read' }} · {{ draft.student_id_detection.status|replace('_',' ') }}</dd>
+    {% if detected_student %}<dt class="col-sm-3">ID match</dt><dd class="col-sm-9">{{ detected_student.name }} · {{ detected_student.student_number }} · {{ detected_student.class_section }}</dd>{% elif draft.detected_student_number %}<dt class="col-sm-3">ID match</dt><dd class="col-sm-9">No registered student has this exact number.</dd>{% endif %}
     <dt class="col-sm-3">Assessment</dt><dd class="col-sm-9">{{ draft.assessment.title }} ({{ draft.assessment.questions|length }} questions)</dd>
     <dt class="col-sm-3">Orientation</dt><dd class="col-sm-9">{{ draft.processing_notes.get('orientation') }}</dd>
   </dl>
 </section>
 <section class="row g-3 mb-3">
   {% for kind, label in [('original','Original upload'),('aligned','Perspective-corrected page'),('debug','Bubble diagnostics')] %}
-  <div class="col-lg-4"><article class="card h-100"><h2>{{ label }}</h2><a href="{{ url_for('scanning.v3_draft_image', draft_id=draft.id, kind=kind) }}" target="_blank" rel="noopener"><img class="scan-preview" src="{{ url_for('scanning.v3_draft_image', draft_id=draft.id, kind=kind) }}" alt="{{ label }} for V3 scan {{ draft.id }}"></a></article></div>
+  <div class="col-lg-4"><article class="card h-100"><h2>{{ label }}</h2><a href="{{ url_for('scanning.v3_draft_image', draft_id=draft.id, kind=kind) }}" target="_blank" rel="noopener"><img class="scan-preview" src="{{ url_for('scanning.v3_draft_image', draft_id=draft.id, kind=kind) }}" alt="{{ label }} for scan {{ draft.id }}"></a></article></div>
   {% endfor %}
 </section>
 <section class="card">
   <h2>Confirm student and answers</h2>
+  {% if student_class_mismatch %}<div class="alert alert-warning">The detected ID exactly matches {{ detected_student.name }}, but that student is in {{ detected_student.class_section }} and this assessment is assigned to {{ draft.assessment.class_section }}. Verify the sheet and assessment before confirming.</div>
+  {% elif detected_student %}<div class="alert alert-info">The detected ID matched {{ detected_student.name }}. That student is preselected below; verify the match before confirming.</div>
+  {% elif draft.detected_student_number %}<div class="alert alert-warning">The ID was read, but it did not match a registered student. Select the correct student manually.</div>
+  {% endif %}
   <form method="post" action="{{ url_for('scanning.confirm_v3_draft', draft_id=draft.id) }}" class="vstack gap-3">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div>
@@ -27,10 +32,10 @@
       <select class="form-select" id="student_id" name="student_id" required>
         <option value="">Select the correct student</option>
         {% for student in students %}
-        <option value="{{ student.id }}" {% if draft.student_id == student.id %}selected{% endif %}>{{ student.name }} · {{ student.student_number }} · {{ student.class_section }}</option>
+        <option value="{{ student.id }}" {% if selected_student_id == student.id %}selected{% endif %}>{{ student.name }} · {{ student.student_number }} · {{ student.class_section }}</option>
         {% endfor %}
       </select>
-      <div class="form-text">An ID is matched only when all seven digits are confidently read and belong to this assessment's class.</div>
+      <div class="form-text">An exact, confidently read seven-digit ID is matched against the student roster and preselected. Check any class mismatch before confirming.</div>
     </div>
     <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Question</th><th>Detected</th><th>Confidence</th><th>Final answer</th></tr></thead><tbody>
       {% for item in draft.recognized_answers %}
@@ -44,7 +49,7 @@
             <option value="__blank__" {% if item.status == 'blank' %}selected{% endif %}>Blank / no mark</option>
             {% for option in ['A','B','C','D','E'] %}<option value="{{ option }}" {% if item.status == 'detected' and item.answer == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
           </select>
-          {% if item.status in ['multiple_marks','ambiguous'] %}<div class="small text-warning mt-1">Bubble values: {% for option, value in item.values.items() %}{{ option }} {{ '%.2f'|format(value) }}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+          {% if item.status in ['multiple_marks','ambiguous'] %}<div class="small text-warning mt-1">Bubble values: {% for option, value in item['values'].items() %}{{ option }} {{ '%.2f'|format(value) }}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
         </td>
       </tr>
       {% endfor %}

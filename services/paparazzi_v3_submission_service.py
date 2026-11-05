@@ -11,12 +11,15 @@ from extensions import db
 from models import Assessment, ScanDraft, Student
 from services.image_processor import ImageProcessingError, load_uploaded_image
 from services.paparazzi_v3_scanner import (
-    align_paparazzi_v3_auto,
+    align_paparazzi_v3,
+    load_official_profile,
     detect_v3_answers,
     detect_v3_student_id,
 )
+from services.marker_detection import detect_v3_registration_markers
+from services.muse_marker_locator import configured_muse_locator
 
-SUPPORTED_V3_QUESTION_COUNTS = {20, 50, 100}
+SUPPORTED_OFFICIAL_QUESTION_COUNTS = {20, 50}
 
 
 def _save_image(folder: Path, image, name: str) -> str:
@@ -36,17 +39,29 @@ def create_v3_scan_draft(file_storage, app_config, assessment: Assessment, quest
 
 
 def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, question_count: int, selected_student_id=None, *, capture_id=None, original_filename=None) -> ScanDraft:
-    if question_count not in SUPPORTED_V3_QUESTION_COUNTS:
-        raise ValueError("Choose a 20, 50, or 100 question V3 sheet.")
+    if question_count not in SUPPORTED_OFFICIAL_QUESTION_COUNTS:
+        raise ValueError("Choose an official 20- or 50-question Paparazzi sheet.")
     questions = sorted(assessment.questions, key=lambda question: question.question_number)
     if len(questions) != question_count or [question.question_number for question in questions] != list(range(1, question_count + 1)):
-        raise ValueError("The selected V3 template question count must match the assessment answer key exactly.")
-    if any(not question.option_e.strip() for question in questions):
-        raise ValueError("Choice E must be completed for every question before using a V3 sheet.")
+        raise ValueError("The selected official answer-sheet question count must match the assessment answer key exactly.")
     if any(question.correct_answer not in {"A", "B", "C", "D", "E"} for question in questions):
-        raise ValueError("The answer key contains an invalid V3 answer choice.")
+        raise ValueError("The answer key contains an invalid answer choice.")
 
-    profile, alignment = align_paparazzi_v3_auto(image, question_count)
+    marker_confidence = float(app_config.get("CAMERA_MIN_MARKER_CONFIDENCE", 0.10))
+    profile = load_official_profile(question_count)
+    try:
+        alignment = align_paparazzi_v3(image, profile, question_count=question_count, min_marker_confidence=marker_confidence)
+    except ImageProcessingError as local_error:
+        local_markers = detect_v3_registration_markers(
+            image,
+            min_page_area_ratio=float(app_config.get("CAMERA_MIN_PAGE_AREA_RATIO", 0.25)),
+            min_confidence=marker_confidence,
+        )
+        locator = configured_muse_locator(app_config) if not local_markers.get("valid") else None
+        marker_candidates = locator.locate(image) if locator is not None else None
+        if not marker_candidates:
+            raise local_error
+        alignment = align_paparazzi_v3(image, profile, question_count=question_count, min_marker_confidence=marker_confidence, marker_candidates=marker_candidates)
     student_id_detection = detect_v3_student_id(alignment.aligned_image, profile)
     recognized_answers = detect_v3_answers(alignment.aligned_image, question_count, profile)
 
@@ -55,8 +70,6 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
         matched_student = db.session.scalar(
             select(Student).where(Student.student_number == student_id_detection["student_id"])
         )
-        if matched_student and matched_student.class_section != assessment.class_section:
-            matched_student = None
 
     selected_student = None
     if selected_student_id not in (None, ""):
@@ -100,12 +113,13 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
             "profile_variant": profile.get("profile_variant", "standard"),
             "matched_student_id": matched_student.id if matched_student else None,
             "matched_student_name": matched_student.name if matched_student else None,
+            "matched_student_class_mismatch": bool(matched_student and matched_student.class_section != assessment.class_section),
             "student_id_unmatched": bool(student_id_detection["student_id"] and not matched_student),
             "capture_id": capture_id,
         }
         draft = ScanDraft(
             assessment_id=assessment.id,
-            student_id=selected_student.id if selected_student else (matched_student.id if matched_student else None),
+            student_id=matched_student.id if matched_student else (selected_student.id if selected_student else None),
             detected_student_number=student_id_detection["student_id"],
             question_count=question_count,
             profile_version=profile["version"],
@@ -132,10 +146,15 @@ def confirm_v3_scan_draft(draft: ScanDraft, student: Student, final_answers: lis
 
     assessment = draft.assessment
     questions = sorted(assessment.questions, key=lambda question: question.question_number)
-    if student.class_section != assessment.class_section:
+    exact_detected_id_match = (
+        draft.student_id_detection.get("status") == "detected"
+        and draft.detected_student_number
+        and student.student_number == draft.detected_student_number
+    )
+    if student.class_section != assessment.class_section and not exact_detected_id_match:
         raise ValueError("The selected student is not assigned to this assessment's class section.")
     if len(final_answers) != draft.question_count or len(questions) != draft.question_count:
-        raise ValueError("The reviewed response count does not match the V3 sheet and assessment.")
+        raise ValueError("The reviewed response count does not match the official sheet and assessment.")
     existing = db.session.scalar(
         select(Submission).where(Submission.student_id == student.id, Submission.assessment_id == assessment.id)
     )
@@ -187,7 +206,7 @@ def confirm_v3_scan_draft(draft: ScanDraft, student: Student, final_answers: lis
             response.corrections.append(AnswerCorrection(
                 previous_answer=original["answer"],
                 corrected_answer=item["answer"],
-                note="Teacher confirmation during V3 scan review.",
+                note="Teacher confirmation during official sheet scan review.",
             ))
     db.session.add(submission)
     capture_id = (draft.processing_notes or {}).get("capture_id")

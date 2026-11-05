@@ -1,13 +1,13 @@
 {% extends 'base.html' %}
 {% block title %}Automatic scanning{% endblock %}
 {% block content %}
-<div id="automatic-scanner" data-status-url="{{ url_for('automatic_scanning.status') }}">
+<div id="automatic-scanner" data-status-url="{{ url_for('automatic_scanning.status') }}" data-print-step-url="{{ url_for('automatic_scanning.print_step') }}" data-capture-step-url="{{ url_for('automatic_scanning.capture_step') }}">
   <section class="card">
-    <p class="eyebrow">ESP32 CAMERA · V3 CAPTURE QUEUE</p>
+    <p class="eyebrow">ESP32 CAMERA · PAPARAZZI CAPTURE QUEUE</p>
     <h1>Automatic scanning</h1>
-    <p class="text-muted">The live MJPEG feed is used for marker and sheet-transition checks. A separate high-resolution still is captured only after a stable replacement event.</p>
+    <p class="text-muted">Each cycle initiates one blank A4 print, waits six seconds, captures and validates a high-resolution still, then requests the next page. Scanning stops when the same sheet is captured twice in a row.</p>
     {% if migration_pending %}
-    <div class="alert alert-warning">Automatic scanning storage is not installed. Review and apply Alembic migrations through <code>20261101_0006</code> before using camera polling. Manual image upload remains available.</div>
+    <div class="alert alert-warning">Automatic scanning storage is not installed. Review and apply Alembic migrations through <code>20261105_0012</code> before using camera polling. Manual image upload remains available.</div>
     {% else %}
     <div class="row g-3">
       <div class="col-lg-8">
@@ -25,12 +25,15 @@
           <dt class="col-7">Page in frame</dt><dd class="col-5" id="page-visible">{{ 'Yes' if control and control.marker_status.get('sheet_sufficiently_visible') else 'No' }}</dd>
           <dt class="col-7">Stable</dt><dd class="col-5" id="stability">{{ 'Yes' if control and control.stability_status else 'No' }}</dd>
           <dt class="col-7">Capture state</dt><dd class="col-5" id="capture-state">{{ control.state if control else 'WAITING_FOR_FIRST_SHEET' }}</dd>
+          <dt class="col-7">Scanning session</dt><dd class="col-5" id="session-state">{{ session_progress.state if session_progress else 'READY' }}</dd>
         </dl>
         <p class="small text-danger" id="camera-error">{{ control.last_error if control and control.last_error else '' }}</p>
       </div>
     </div>
     {% endif %}
   </section>
+  <div class="alert alert-info" id="printer-feed-notice">The printer will receive one blank page per cycle. Six seconds after each print is initiated, Paparazzi captures the page and then requests the next blank page. A repeated capture ends the session.</div>
+  <iframe id="printer-feed-job" title="One-page blank printer feed job" hidden></iframe>
   {% if not migration_pending %}
   <section class="card" id="camera-poller-panel">
     <p class="eyebrow">CAMERAWEBSERVER JPEG POLLING</p>
@@ -39,7 +42,7 @@
       <dt class="col-sm-3">Configured URL</dt><dd class="col-sm-9"><code id="poller-url">{{ camera_url or 'Not configured' }}</code></dd>
       <dt class="col-sm-3">Camera ID</dt><dd class="col-sm-9" id="poller-camera-id">{{ camera_id }}</dd>
       <dt class="col-sm-3">Polling interval</dt><dd class="col-sm-9">{{ config.get('PAPARAZZI_CAMERA_POLL_INTERVAL', 1) }} seconds</dd>
-      <dt class="col-sm-3">Poller</dt><dd class="col-sm-9" id="poller-running">{{ 'Running' if poller and poller.poller_running else 'Stopped' }}</dd>
+      <dt class="col-sm-3">Camera polling</dt><dd class="col-sm-9" id="poller-running">{{ 'Polling' if poller and poller.polling_enabled else 'Idle (polling off)' if poller and poller.poller_running else 'Stopped' }}</dd>
       <dt class="col-sm-3">Camera connection</dt><dd class="col-sm-9" id="poller-connection">{{ poller.connection_status if poller else 'stopped' }}</dd>
       <dt class="col-sm-3">Last successful fetch</dt><dd class="col-sm-9" id="poller-last-fetch">{{ poller.last_fetch_at.isoformat() if poller and poller.last_fetch_at else '—' }}</dd>
       <dt class="col-sm-3">Last error</dt><dd class="col-sm-9 text-danger" id="poller-last-error">{{ poller.last_error if poller and poller.last_error else '—' }}</dd>
@@ -55,8 +58,8 @@
     <div class="d-flex gap-2 mt-3">
       <form method="post" action="{{ url_for('automatic_scanning.start_poller') }}" class="d-flex gap-2 align-items-end">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-        <label class="form-label mb-0">V3 assessment<select class="form-select" name="assessment_id" required>
-          <option value="">Select 20, 50, or 100 question assessment</option>
+        <label class="form-label mb-0">Assessment<select class="form-select" name="assessment_id" required>
+          <option value="">Select 20- or 50-question assessment</option>
           {% for item in assessments %}<option value="{{ item.id }}" {% if selected_assessment == item.id %}selected{% endif %}>{{ item.title }} · {{ item.total_questions }} questions</option>{% endfor %}
         </select></label>
         <label class="form-label mb-0">Control token<input class="form-control" type="password" name="camera_control_token" autocomplete="current-password" required></label>
@@ -74,16 +77,60 @@
     <p class="small text-muted mt-3 mb-0">The poller fetches JPEGs from the server-configured local camera URL. It runs as a separate process; no browser-supplied URL is accepted.</p>
   </section>
   <section class="card">
+    <h2>One-time ESP32 setup</h2>
+    <p class="small text-muted">Save the local camera address once. The live MJPEG feed is only a preview; scanning reads still images from the ESP32 capture URL so it does not compete with the preview stream.</p>
+    <form method="post" action="{{ url_for('automatic_scanning.update_camera_setup') }}" class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-lg-2"><label class="form-label" for="setup-camera-id">Camera ID</label><input class="form-control" id="setup-camera-id" name="camera_id" maxlength="100" value="{{ camera_setup.camera_id }}" required></div>
+      <div class="col-lg-4"><label class="form-label" for="setup-stream-url">Live stream URL</label><input class="form-control" id="setup-stream-url" name="stream_url" type="url" value="{{ camera_setup.stream_url }}" placeholder="http://192.168.1.80:81/stream" required></div>
+      <div class="col-lg-4"><label class="form-label" for="setup-capture-url">Still-capture URL</label><input class="form-control" id="setup-capture-url" name="capture_url" type="url" value="{{ camera_setup.capture_url }}" placeholder="http://192.168.1.80/capture" required></div>
+      <div class="col-lg-1"><label class="form-label" for="setup-timeout">Timeout (s)</label><input class="form-control" id="setup-timeout" name="timeout_seconds" type="number" min="1" max="30" step="1" value="{{ camera_setup.timeout_seconds }}" required></div>
+      <div class="col-lg-1"><button class="btn btn-outline-primary w-100">Save</button></div>
+    </form>
+    <p class="small text-warning mt-2 mb-0">Load completed answer sheets for feeding. The automatic scan prints one blank A4 page per cycle using the system default printer; set A4 paper and disable duplex in printer preferences before scanning.</p>
+  </section>
+  <section class="card">
     <h2>Capture controls</h2>
+    <div class="alert alert-warning"><strong>One-time setup required on the computer connected to the printer.</strong> Silent printing sends each blank page straight to the default printer. Configure the browser first; Paparazzi cannot change browser or Windows settings for you.</div>
+    <details class="mb-3">
+      <summary class="fw-semibold">Show teacher setup steps</summary>
+      <div class="border rounded p-3 mt-2">
+        <h3 class="h6">1. Set up the printer in Windows</h3>
+        <ol>
+          <li>Open <strong>Settings → Bluetooth &amp; devices → Printers &amp; scanners</strong>.</li>
+          <li>Select the printer that will feed the answer sheets and choose <strong>Set as default</strong>. If Windows manages the default printer automatically, turn that option off first.</li>
+          <li>Open that printer's printing preferences. Set paper to <strong>A4</strong> and turn <strong>two-sided / duplex</strong> printing off.</li>
+        </ol>
+        <h3 class="h6">2. Choose one browser setup</h3>
+        <p><strong>Chrome (recommended):</strong></p>
+        <ol>
+          <li>Close every Chrome window.</li>
+          <li>Find Chrome in the Windows Start menu, right-click it, then choose <strong>Open file location</strong>.</li>
+          <li>In the folder that opens, right-click the Chrome shortcut and choose <strong>Properties</strong>.</li>
+          <li>On the <strong>Shortcut</strong> tab, click the end of the <strong>Target</strong> field. Add a space and <code>--kiosk-printing</code> after the closing quote. Keep the existing path. It should look similar to:<br><code>"C:\Program Files\Google\Chrome\Application\chrome.exe" --kiosk-printing</code></li>
+          <li>Choose <strong>Apply</strong>, then <strong>OK</strong>. From now on, open Paparazzi using this edited shortcut.</li>
+        </ol>
+        <p><strong>Microsoft Edge:</strong> Edge silent printing is controlled by a Windows policy and needs Edge policy templates and administrator access. Ask your IT administrator to enable <strong>Enable Silent Printing</strong> at <strong>Computer Configuration → Administrative Templates → Microsoft Edge</strong>, then restart Edge. This policy is supported in Edge 144 and later. <a href="https://learn.microsoft.com/en-us/deployedge/microsoft-edge-browser-policies/silentprintingenabled" target="_blank" rel="noopener">Microsoft's setup and version details</a>.</p>
+        <h3 class="h6">3. Check before scanning</h3>
+        <ol>
+          <li>Open Paparazzi in the configured browser and select the assessment.</li>
+          <li>Check <strong>Silent printing is configured on this computer</strong>, then choose <strong>Start one-page scanning</strong>.</li>
+          <li>The printer should feed one blank page without showing a print dialog. If a print dialog appears, choose <strong>Stop</strong> in Paparazzi, close the browser, and check the setup above before trying again.</li>
+        </ol>
+        <p class="small text-muted mb-0">This setup is per computer. The checkbox remembers your confirmation in this browser; the page cannot verify the browser policy itself.</p>
+      </div>
+    </details>
     <form method="post" action="{{ url_for('automatic_scanning.start') }}" class="row g-2 align-items-end">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="col-md-8"><label class="form-label" for="assessment_id">Assessment and V3 answer key</label>
+      <div class="col-md-6"><label class="form-label" for="assessment_id">Assessment and answer key</label>
         <select class="form-select" id="assessment_id" name="assessment_id" required>
           <option value="">Select assessment</option>
           {% for item in assessments %}<option value="{{ item.id }}" {% if selected_assessment == item.id %}selected{% endif %}>{{ item.title }} · {{ item.total_questions }} questions · {{ item.class_section }}</option>{% endfor %}
         </select>
-      </div><div class="col-md-4"><button class="btn btn-primary w-100" type="submit">Start automatic scanning</button></div>
+      </div>
+      <div class="col-md-3"><label class="form-check mb-2"><input class="form-check-input" type="checkbox" name="silent_print_configured" value="yes" required><span class="form-check-label">Silent printing is configured on this computer</span></label><button class="btn btn-primary w-100" type="submit">Start one-page scanning</button></div>
     </form>
+    <p class="small text-muted mt-2 mb-0">Load completed answer sheets in the printer tray. Paparazzi initiates one blank-page print, waits six seconds, takes a still, and repeats. The second consecutive capture of the same sheet is treated as the empty-feed signal and is not graded again.</p>
     <div class="d-flex gap-2 mt-3 flex-wrap">
       <form method="post" action="{{ url_for('automatic_scanning.pause') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-warning" {% if not control or not control.active or control.paused %}disabled{% endif %}>Pause</button></form>
       <form method="post" action="{{ url_for('automatic_scanning.resume') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-success" {% if not control or not control.active or not control.paused %}disabled{% endif %}>Resume</button></form>
@@ -95,11 +142,11 @@
         </select><button class="btn btn-outline-primary" {% if control and control.active and not control.paused %}disabled{% endif %}>Manual camera capture</button>
       </form>
     </div>
-    <p class="small text-muted mt-3 mb-0">The Flask server and the single consumer worker are separate processes. Start the worker with <code>python -m services.scan_worker</code>. When the queue reaches its limit, auto capture pauses before requesting another still.</p>
+    <p class="small text-muted mt-3 mb-0">The Flask server coordinates printer steps and captures. The separate worker only grades queued images; start or restart it with <code>python -m services.scan_worker</code>. If the queue fills or a capture fails, scanning pauses before requesting another page.</p>
   </section>
   <section class="card">
     <h2>Camera image ingestion</h2>
-    <p class="small text-muted">API images are checked for V3 registration geometry before accepted images enter the queue.</p>
+    <p class="small text-muted">API images are checked for registration geometry before accepted images enter the queue.</p>
     <div class="stats-grid">
       <div class="stat-box"><span class="label">Received</span><strong id="ingest-received">0</strong></div>
       <div class="stat-box"><span class="label">Rejected</span><strong id="ingest-rejected">0</strong></div>
@@ -107,6 +154,19 @@
       <div class="stat-box"><span class="label">Duplicates ignored</span><strong id="ingest-duplicates">0</strong></div>
       <div class="stat-box"><span class="label">Last image received</span><strong id="ingest-last-received">—</strong></div>
     </div>
+  </section>
+  <section class="card">
+    <h2>Current scanning session</h2>
+    <div class="stats-grid">
+      <div class="stat-box"><span class="label">Valid sheets captured</span><strong id="session-captured">{{ session_progress.valid_sheets_captured if session_progress else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Images awaiting processing</span><strong id="session-awaiting">{{ session_progress.images_awaiting_processing if session_progress else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Successfully graded</span><strong id="session-graded">{{ session_progress.successfully_graded if session_progress else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Needs review</span><strong id="session-review">{{ session_progress.review_required if session_progress else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Rejected images</span><strong id="session-rejected">{{ session_progress.rejected_images if session_progress else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Duplicates ignored</span><strong id="session-duplicates">{{ session_progress.duplicate_captures if session_progress else 0 }}</strong></div>
+      <div class="stat-box"><span class="label">Last successful capture</span><strong id="session-last-capture">{{ session_progress.last_successful_capture_at if session_progress and session_progress.last_successful_capture_at else '—' }}</strong></div>
+    </div>
+    <p class="small text-muted mb-0">A session is marked complete only after the capture queue drains and all captured jobs finish processing. Review and failed counts remain visible until resolved.</p>
   </section>
   <section class="card">
     <h2>Processing queue</h2>

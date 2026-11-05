@@ -1,0 +1,34 @@
+{% extends 'base.html' %}
+{% block title %}Canvas LMS{% endblock %}
+{% block content %}
+<section class="card">
+  <p class="eyebrow">OPTIONAL GRADEBOOK CONNECTION</p><h1>Canvas LMS</h1>
+  <p>Canvas is optional. Paparazzi sends grades only after you preview them and confirm the upload. This local, single-teacher app uses a development personal access token; a multi-teacher deployment should use institution-approved OAuth.</p>
+  <p class="small text-muted">Keep Paparazzi bound to localhost. Canvas connections and grade actions are restricted to local browser requests. Use an HTTPS Canvas institution URL. The token is encrypted on the server and never sent to the browser after saving.</p>
+  {% if connection %}
+  <div class="alert alert-success">Connected to <strong>{{ connection.base_url }}</strong> · Canvas teacher account ID {{ connection.canvas_user_id }} · {{ connection.connection_status }}</div>
+  <form method="post" action="{{ url_for('canvas.disconnect') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-danger">Disconnect and remove token</button></form>
+  {% else %}
+  {% if not encryption_available %}<div class="alert alert-danger">Token encryption is unavailable on this server. Configure CANVAS_TOKEN_ENCRYPTION_KEY and install the cryptography package before connecting.</div>{% endif %}
+  <form method="post" action="{{ url_for('canvas.connect') }}" class="row g-3" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="col-md-6"><label class="form-label" for="canvas-url">Institution Canvas URL</label><input class="form-control" id="canvas-url" name="base_url" type="url" placeholder="https://school.instructure.com" pattern="https://.*" required></div>
+    <div class="col-md-6"><label class="form-label" for="canvas-token">Personal access token · local development option</label><input class="form-control" id="canvas-token" name="access_token" type="password" autocomplete="new-password" required maxlength="4096"></div>
+    <div class="col-12"><button class="btn btn-primary" {% if not encryption_available %}disabled{% endif %}>Verify and connect</button></div>
+  </form>
+  <p class="small text-muted mt-3 mb-0">Create the token in your own Canvas profile under Approved Integrations. Canvas administrator policies may prohibit personal tokens; follow your institution's rules. This prototype does not implement institutional OAuth.</p>
+  {% endif %}
+</section>
+<section class="card"><h2>Assessment course and assignment mappings</h2>
+  <div class="table-responsive"><table class="table"><thead><tr><th>Paparazzi assessment</th><th>Canvas course</th><th>Canvas assignment</th><th></th></tr></thead><tbody>
+  {% for item in assessments %}{% set mapping = mappings.get(item.id) %}<tr><td>{{ item.title }}</td><td>{{ mapping.course_name if mapping else 'Not selected' }}</td><td>{{ mapping.assignment_name if mapping and mapping.assignment_name else 'Not selected' }}</td><td><a class="btn btn-sm btn-outline-primary" href="{{ url_for('canvas.assessment_setup', assessment_id=item.id) }}">Configure</a></td></tr>
+  {% else %}<tr><td colspan="4" class="text-muted">Create an assessment before connecting gradebooks.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+<section class="card"><div class="d-flex justify-content-between"><h2>Recent Canvas sync activity</h2><a href="{{ url_for('canvas.sync_history') }}">Full history</a></div>
+  <div class="table-responsive"><table class="table"><thead><tr><th>When</th><th>Assessment</th><th>Paparazzi ID</th><th>Canvas IDs</th><th>Grade</th><th>Status</th></tr></thead><tbody>
+  {% for row in history %}<tr><td>{{ row.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ row.assessment.title if row.assessment else row.assessment_id }}</td><td>{{ row.student_number }}</td><td>Course {{ row.course_id }} · Assignment {{ row.assignment_id }}{% if row.canvas_user_id %} · User {{ row.canvas_user_id }}{% endif %}</td><td>{{ row.posted_grade if row.posted_grade is not none else '—' }}</td><td>{{ row.status|title }}{% if row.error_detail %}<div class="small text-danger">{{ row.error_detail }}</div>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="6" class="text-muted">No Canvas grade syncs yet.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

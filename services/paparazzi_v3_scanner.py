@@ -17,6 +17,7 @@ ASSET_DIR = Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "
 PROFILE_PATH = ASSET_DIR / "Paparazzi_Standard_V3_Profile.json"
 ORIGINS_PATH = ASSET_DIR / "Paparazzi_Standard_V3_Vector_Origins.json"
 LARGE_BUBBLE_50_PROFILE_PATH = ASSET_DIR / "Paparazzi_50Q_Large_Bubble_Profile.json"
+V4_PROFILE_PATH = Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "v4" / "Paparazzi_Answer_Sheets_V4_Package" / "Paparazzi_Standard_V4_Profile.json"
 CANONICAL_DPI = 300
 
 
@@ -56,8 +57,67 @@ def load_v3_profile(profile_variant: str = "standard") -> dict:
     return profile
 
 
+@lru_cache(maxsize=1)
+def load_v4_profile() -> dict:
+    return json.loads(V4_PROFILE_PATH.read_text(encoding="utf-8"))
+
+
+def load_paparazzi_profile(version: str = "V4") -> dict:
+    # Legacy callers that pass the former version string now receive the
+    # default official layout. Scanning itself selects by question count.
+    return load_official_profile(20)
+
+
+@lru_cache(maxsize=2)
+def load_official_profile(question_count: int) -> dict:
+    """Return coordinates for the supplied official fixture answer sheets."""
+    if question_count == 50:
+        profile = json.loads(json.dumps(load_v3_profile("50q_large_bubble")))
+        profile["version"] = "PAPARAZZI-OMR-A4-OFFICIAL"
+        profile["source_description"] = "The official 50-question fixture sheet."
+        profile["student_id"].update({"bubble_radius_mm": 3.81, "row_pitch_mm": 8.4})
+        return profile
+    if question_count != 20:
+        raise ValueError("Official answer sheets are available for 20 or 50 questions.")
+
+    profile = json.loads(json.dumps(load_v4_profile()))
+    profile["version"] = "PAPARAZZI-OMR-A4-OFFICIAL"
+    profile["source_description"] = "The official 20-question fixture sheet."
+    # The supplied 20Q PDF has a single 20-row answer column and a large
+    # seven-digit ID grid. Its answer centers match the first column of the
+    # supplied large-bubble 50Q sheet.
+    profile["student_id"].update({
+        "bubble_radius_mm": 3.81,
+        "column_pitch_mm": 11.25,
+        "row_pitch_mm": 8.4,
+        "first_bubble_center_mm": [21.0, 19.01],
+    })
+    profile["answers"].update({
+        "bubble_radius_mm": 3.81,
+        "choice_pitch_mm": 11.865,
+        "row_pitch_mm": 8.67,
+        "layouts": {
+            "20": {
+                "columns": 1,
+                "rows_per_column": 20,
+                "questions_per_column": [20],
+                "column_first_bubble_x_mm": [24.342],
+                "row_centers_y_mm_by_column": [
+                    [
+                        109.643, 118.279, 127.0, 135.636, 144.441,
+                        153.077, 161.713, 170.434, 179.07, 187.791,
+                        196.681, 205.317, 214.037, 222.673, 231.479,
+                        240.115, 248.751, 257.471, 266.107, 274.828,
+                    ]
+                ],
+            }
+        },
+    })
+    return profile
+
+
 def get_student_id_bubble_centers_mm(profile: dict | None = None) -> list[list[tuple[float, float]]]:
-    profile = profile or load_v3_profile()
+    profile = profile or load_official_profile(20)
     section = profile["student_id"]
     origin_x, origin_y = section["first_bubble_center_mm"]
     return [
@@ -70,10 +130,10 @@ def get_student_id_bubble_centers_mm(profile: dict | None = None) -> list[list[t
 
 
 def get_answer_bubble_centers_mm(question_count: int, profile: dict | None = None) -> dict[int, list[tuple[float, float]]]:
-    profile = profile or load_v3_profile()
+    profile = profile or load_official_profile(question_count)
     layout = profile["answers"]["layouts"].get(str(question_count))
     if layout is None:
-        raise ValueError("Paparazzi Standard V3 supports 20, 50, or 100 questions.")
+        raise ValueError("Official answer sheets are available for 20 or 50 questions.")
     choices = profile["answers"]["choices"]
     column_x = layout["column_first_bubble_x_mm"]
     first_y = profile["answers"].get("first_row_center_y_mm", 0.0)
@@ -199,7 +259,37 @@ def _find_square_candidates(gray: np.ndarray) -> list[dict]:
             if not any(np.linalg.norm(center - item["center"]) < min(side, item["side"]) * 0.45 for item in candidates):
                 candidates.append({"center": center, "vertices": vertices, "side": side, "quality": quality})
 
-    return sorted(candidates, key=lambda item: item["quality"], reverse=True)[:20]
+    # A registration square can touch its nearby header text after blur and
+    # perspective, so contour polygon approximation may merge it with text.
+    # Morphological opening recovers isolated, densely filled square marks.
+    min_side = max(10, round(min(width, height) * 0.008))
+    max_side = round(min(width, height) * 0.06)
+    open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    for threshold_value in (70, 90, 110):
+        _, binary = cv2.threshold(enhanced, threshold_value, 255, cv2.THRESH_BINARY_INV)
+        opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, open_kernel)
+        component_count, _, stats, centroids = cv2.connectedComponentsWithStats(opened)
+        for index in range(1, component_count):
+            x, y, box_width, box_height, area = map(int, stats[index])
+            side = (box_width + box_height) / 2.0
+            if not min_side <= side <= max_side or min(box_width, box_height) == 0:
+                continue
+            aspect = max(box_width, box_height) / min(box_width, box_height)
+            fill_ratio = area / float(box_width * box_height)
+            if aspect > 1.38 or fill_ratio < 0.82:
+                continue
+            center = centroids[index].astype(np.float32)
+            if not any(np.linalg.norm(center - item["center"]) < min(side, item["side"]) * 0.45 for item in candidates):
+                vertices = np.asarray([
+                    [x, y], [x + box_width, y],
+                    [x + box_width, y + box_height], [x, y + box_height],
+                ], dtype=np.float32)
+                candidates.append({"center": center, "vertices": vertices, "side": side, "quality": fill_ratio})
+
+    # Large, softly focused photos can produce many bubble and fabric
+    # contours ahead of one of the page's registration marks. Retain enough
+    # ranked candidates for the page-geometry scorer to recover that mark.
+    return sorted(candidates, key=lambda item: item["quality"], reverse=True)[:48]
 
 
 def _order_quad(points: np.ndarray) -> np.ndarray:
@@ -256,6 +346,11 @@ def _combination_score(candidates: tuple[dict, ...], profile: dict, image_shape:
     return score, ordered
 
 
+def _marker_confidence_from_geometry_score(score: float) -> float:
+    """Map the marker-geometry residual to a bounded confidence value."""
+    return float(max(0.0, min(1.0, 1.0 - float(score) / 0.75)))
+
+
 def _profile_mark_centers(profile: dict) -> dict[str, tuple[float, float]]:
     paper = profile["paper"]
     mark = profile["registration_marks"]
@@ -299,22 +394,43 @@ def _layout_match_score(gray: np.ndarray, question_count: int, profile: dict) ->
     return float(np.mean(values)) if values else 0.0
 
 
-def align_paparazzi_v3(image: np.ndarray, profile: dict | None = None, question_count: int = 20) -> V3AlignmentResult:
-    profile = profile or load_v3_profile()
+def align_paparazzi_v3(
+    image: np.ndarray,
+    profile: dict | None = None,
+    question_count: int = 20,
+    *,
+    min_marker_confidence: float = 0.10,
+    marker_candidates: list[dict] | None = None,
+) -> V3AlignmentResult:
+    if not 0.0 <= min_marker_confidence <= 1.0:
+        raise ValueError("Minimum marker confidence must be between 0 and 1.")
+    profile = profile or load_official_profile(question_count)
     gray = _gray_image(image)
     normalized_gray = preprocess_v3_image(gray)
-    candidates = _find_square_candidates(gray)
-    if len(candidates) < 4:
-        raise ImageProcessingError("Could not find four V3 square registration marks. Include the whole page and all corners.")
-
     scored = []
-    for combination in itertools.combinations(candidates, 4):
+    if marker_candidates is not None:
+        candidate_groups = [tuple(marker_candidates)] if len(marker_candidates) == 4 else []
+    else:
+        candidates = [
+            candidate for candidate in _find_square_candidates(gray)
+            if candidate["side"] >= max(12.0, min(gray.shape) * 0.015)
+        ]
+        if len(candidates) < 4:
+            raise ImageProcessingError("Could not find the four registration marks. Include the whole page and all corners.")
+        candidate_groups = itertools.combinations(candidates, 4)
+    for combination in candidate_groups:
         result = _combination_score(combination, profile, gray.shape)
         if result is not None:
             scored.append((result[0], result[1]))
     if not scored:
-        raise ImageProcessingError("Detected dark shapes do not form the expected V3 registration-mark geometry.")
-    _, ordered = min(scored, key=lambda item: item[0])
+        raise ImageProcessingError("Detected dark shapes do not match the official registration-mark geometry.")
+    geometry_score, ordered = min(scored, key=lambda item: item[0])
+    marker_confidence = _marker_confidence_from_geometry_score(geometry_score)
+    if marker_confidence < min_marker_confidence:
+        raise ImageProcessingError(
+            "The four registration marks do not match the official sheet layout confidently. "
+            "Retake the photo with all four corners sharp, evenly lit, and unobstructed."
+        )
 
     page = profile["paper"]
     scale = CANONICAL_DPI / 25.4
@@ -337,9 +453,9 @@ def align_paparazzi_v3(image: np.ndarray, profile: dict | None = None, question_
     orientations.sort(key=lambda result: result[0], reverse=True)
     match_score, aligned, source, shift = orientations[0]
     if match_score < 0.08:
-        raise ImageProcessingError("The V3 sheet could not be oriented from its registration marks and printed bubble layout.")
+        raise ImageProcessingError("The sheet could not be oriented from its registration marks and printed bubble layout.")
     if len(orientations) > 1 and match_score - orientations[1][0] < 0.002:
-        raise ImageProcessingError("The V3 page orientation is ambiguous; rotate the image upright and retry.")
+        raise ImageProcessingError("The page orientation is ambiguous; rotate the image upright and retry.")
 
     debug = image.copy()
     for point in source:
@@ -351,25 +467,20 @@ def align_paparazzi_v3(image: np.ndarray, profile: dict | None = None, question_
     return V3AlignmentResult(aligned, debug, [tuple(map(float, point)) for point in source], blur_score, f"rotation_{shift * 90}", warnings, match_score)
 
 
-def align_paparazzi_v3_auto(image: np.ndarray, question_count: int) -> tuple[dict, V3AlignmentResult]:
-    """Choose the best supported V3 layout using its printed bubble geometry."""
-    profiles = [load_v3_profile()]
-    if question_count == 50:
-        profiles.append(load_v3_profile("50q_large_bubble"))
-    candidates = []
-    errors = []
-    for profile in profiles:
-        try:
-            alignment = align_paparazzi_v3(image, profile, question_count=question_count)
-            candidates.append((alignment.layout_score, profile, alignment))
-        except ImageProcessingError as error:
-            errors.append(error)
-    if not candidates:
-        raise errors[0]
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 0.015:
-        raise ImageProcessingError("The answer-sheet layout is ambiguous between the standard and large-bubble 50-question templates.")
-    _score, profile, alignment = candidates[0]
+def align_paparazzi_v3_auto(
+    image: np.ndarray,
+    question_count: int,
+    *,
+    min_marker_confidence: float = 0.10,
+    marker_candidates: list[dict] | None = None,
+) -> tuple[dict, V3AlignmentResult]:
+    """Align using the official sheet profile for this assessment's question count."""
+    profile = load_official_profile(question_count)
+    alignment = align_paparazzi_v3(
+        image, profile, question_count=question_count,
+        min_marker_confidence=min_marker_confidence,
+        marker_candidates=marker_candidates,
+    )
     return profile, alignment
 
 
@@ -407,7 +518,7 @@ def _bubble_fill_score(
 
 
 def classify_v3_bubbles(values: dict[str, float]) -> dict:
-    choices = list(load_v3_profile()["answers"]["choices"])
+    choices = list(load_official_profile(20)["answers"]["choices"])
     ordered = sorted(((float(values.get(choice, 0.0)), choice) for choice in choices), reverse=True)
     top_score, top_choice = ordered[0]
     second_score = ordered[1][0]
@@ -423,7 +534,7 @@ def classify_v3_bubbles(values: dict[str, float]) -> dict:
 
 
 def detect_v3_answers(aligned_image: np.ndarray, question_count: int, profile: dict | None = None) -> list[dict]:
-    profile = profile or load_v3_profile()
+    profile = profile or load_official_profile(question_count)
     centers = get_answer_bubble_centers_mm(question_count, profile)
     gray = preprocess_v3_image(aligned_image)
     results = []
@@ -447,7 +558,7 @@ def detect_v3_answers(aligned_image: np.ndarray, question_count: int, profile: d
 
 
 def detect_v3_student_id(aligned_image: np.ndarray, profile: dict | None = None) -> dict:
-    profile = profile or load_v3_profile()
+    profile = profile or load_official_profile(20)
     gray = preprocess_v3_image(aligned_image)
     section = profile["student_id"]
     if not section.get("auto_detect_enabled", True):

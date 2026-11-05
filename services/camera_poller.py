@@ -24,6 +24,31 @@ from services.camera_ingestion import ingest_camera_image_bytes, record_poller_s
 
 logger = logging.getLogger("paparazzi.camera_poller")
 MAX_CAMERA_RESPONSE_BYTES = 32 * 1024 * 1024
+POLLER_LOCK_KEY = "paparazzi-camera-poller-service"
+
+
+def _advisory_lock_is_held(lock_key: str) -> bool:
+    """Check worker liveness without leaving a session lock in the pool."""
+    with db.engine.connect() as connection:
+        acquired = bool(connection.scalar(
+            text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": lock_key},
+        ))
+        if acquired:
+            connection.scalar(
+                text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
+                {"lock_key": lock_key},
+            )
+        connection.commit()
+        return not acquired
+
+
+def camera_poller_worker_running(camera_id: str) -> bool:
+    """Support the current global lock and the former per-camera lock key."""
+    return (
+        _advisory_lock_is_held(POLLER_LOCK_KEY)
+        or _advisory_lock_is_held(f"paparazzi-camera-poller:{camera_id}")
+    )
 
 
 class _NoRedirectHandler(HTTPRedirectHandler):
@@ -53,7 +78,12 @@ def validate_camera_url(url: str) -> str:
         address = ipaddress.ip_address(parsed.hostname)
     except ValueError as error:
         raise ValueError("PAPARAZZI_CAMERA_URL must use a literal private/local IP address to prevent SSRF.") from error
-    if address.is_multicast or address.is_unspecified or not (address.is_private or address.is_loopback or address.is_link_local):
+    private_networks = (ipaddress.ip_network("10.0.0.0/8"), ipaddress.ip_network("172.16.0.0/12"),
+                        ipaddress.ip_network("192.168.0.0/16"), ipaddress.ip_network("fc00::/7"))
+    is_local = address.is_loopback or address.is_link_local or any(
+        address.version == network.version and address in network for network in private_networks
+    )
+    if address.is_multicast or address.is_unspecified or not is_local:
         raise ValueError("PAPARAZZI_CAMERA_URL must target a private, loopback, or link-local device address.")
     try:
         parsed.port
@@ -96,8 +126,18 @@ def fetch_camera_jpeg(url: str, timeout_seconds: float, opener=_open_camera_with
 class CameraPoller:
     def __init__(self, app, *, opener=_open_camera_without_redirects, stop_event: threading.Event | None = None):
         self.app = app
-        self.url = validate_camera_url(app.config.get("PAPARAZZI_CAMERA_URL", ""))
-        self.camera_id = app.config["PAPARAZZI_CAMERA_ID"]
+        camera_url = app.config.get("PAPARAZZI_CAMERA_URL", "")
+        camera_id = app.config["PAPARAZZI_CAMERA_ID"]
+        with app.app_context():
+            try:
+                from models import CameraSetup
+                saved = db.session.get(CameraSetup, 1)
+                if saved:
+                    camera_url, camera_id = saved.capture_url, saved.camera_id
+            except Exception:
+                db.session.rollback()
+        self.url = validate_camera_url(camera_url)
+        self.camera_id = camera_id
         self.interval = float(app.config["PAPARAZZI_CAMERA_POLL_INTERVAL"])
         self.timeout = float(app.config["PAPARAZZI_CAMERA_TIMEOUT"])
         self.opener = opener
@@ -145,10 +185,38 @@ class CameraPoller:
                 )
             return result.payload
 
+    def _refresh_saved_setup(self) -> None:
+        """Pick up camera edits while the poller worker is idle."""
+        from models import CameraSetup
+
+        with self.app.app_context():
+            try:
+                saved = db.session.get(CameraSetup, 1)
+                if saved is None:
+                    db.session.rollback()
+                    return
+                camera_id = saved.camera_id
+                camera_url = validate_camera_url(saved.capture_url)
+                timeout = float(saved.timeout_seconds)
+                db.session.rollback()
+            except Exception:
+                db.session.rollback()
+                raise
+
+        previous_camera_id = self.camera_id
+        self.camera_id = camera_id
+        self.url = camera_url
+        self.timeout = timeout
+        if previous_camera_id != camera_id:
+            with self.app.app_context():
+                record_poller_state(previous_camera_id, poller_running=False, connection_status="stopped")
+                record_poller_state(camera_id, poller_running=True, connection_status="stopped", last_error=None)
+
     def run(self) -> None:
         lock_connection = None
         owns_lock_connection = False
-        lock_key = f"paparazzi-camera-poller:{self.camera_id}"
+        # Camera setup is a singleton, so one service lock covers all saved IDs.
+        lock_key = POLLER_LOCK_KEY
         with self.app.app_context():
             engine_or_test_connection = db.engines[None]
             if hasattr(engine_or_test_connection, "connect"):
@@ -169,6 +237,7 @@ class CameraPoller:
         try:
             while not self.stop_event.is_set():
                 try:
+                    self._refresh_saved_setup()
                     with self.app.app_context():
                         state = db.session.get(CameraIngestionState, self.camera_id)
                         enabled = bool(state and state.polling_enabled)
@@ -208,7 +277,7 @@ class CameraPoller:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Poll a configured local ESP32 CameraWebServer and queue V3 sheets.")
+    parser = argparse.ArgumentParser(description="Poll a configured local ESP32 CameraWebServer and queue Paparazzi sheets.")
     parser.parse_args()
     from app import create_app
 

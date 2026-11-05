@@ -10,7 +10,7 @@ Set these values in the server environment (for PowerShell, use `$env:NAME = 'va
 | --- | --- | --- |
 | `PAPARAZZI_CAMERA_URL` | empty | Fixed CameraWebServer JPEG URL, usually `/capture` |
 | `PAPARAZZI_CAMERA_ID` | `paparazzi-esp32-01` | Stable per-camera identity for replacement state and metrics |
-| `PAPARAZZI_CAMERA_POLL_INTERVAL` | `1` second | Delay between retrieval attempts |
+| `PAPARAZZI_CAMERA_POLL_INTERVAL` | `3.5` seconds | Delay between retrieval attempts |
 | `PAPARAZZI_CAMERA_TIMEOUT` | `5` seconds | HTTP connection/read timeout |
 | `CAMERA_CONTROL_TOKEN` | empty | Required secret for dashboard start/stop controls |
 
@@ -19,7 +19,7 @@ For example:
 ```powershell
 $env:PAPARAZZI_CAMERA_URL = 'http://192.168.1.73/capture'
 $env:PAPARAZZI_CAMERA_ID = 'paparazzi-esp32-01'
-$env:PAPARAZZI_CAMERA_POLL_INTERVAL = '1'
+$env:PAPARAZZI_CAMERA_POLL_INTERVAL = '3.5'
 $env:PAPARAZZI_CAMERA_TIMEOUT = '5'
 $env:CAMERA_CONTROL_TOKEN = 'set-a-long-random-secret-here'
 ```
@@ -36,7 +36,7 @@ python -m services.scan_worker
 python -m services.camera_poller
 ```
 
-Select a complete V3 assessment in Automatic Scanning. Enter `CAMERA_CONTROL_TOKEN` in the dashboard form and choose **Start polling**. The separate poller process sees the persisted flag and starts fetching. **Stop polling** disables that flag; SIGINT/SIGTERM also shuts down the poller gracefully. The poller holds a PostgreSQL advisory session lock keyed by camera ID, so a second poller for the same camera exits rather than double-fetching. The V3 scan worker has its own independent lock and continues processing queued drafts.
+Select a complete V4 assessment in Automatic Scanning. Enter `CAMERA_CONTROL_TOKEN` in the dashboard form and choose **Start polling**. The separate poller process sees the persisted flag and starts fetching. **Stop polling** disables that flag; SIGINT/SIGTERM also shuts down the poller gracefully. The poller holds a PostgreSQL advisory session lock keyed by camera ID, so a second poller for the same camera exits rather than double-fetching. The V4 scan worker has its own independent lock and continues processing queued drafts.
 
 ## Processing and status
 

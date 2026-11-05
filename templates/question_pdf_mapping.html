@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block title %}Question-to-PDF mapping · {{ assessment.title }}{% endblock %}
+{% block content %}
+<section class="card"><a href="{{ url_for('assessment.assessment_detail', assessment_id=assessment.id) }}">&larr; {{ assessment.title }}</a><p class="eyebrow mt-3">ORIGINAL TEST QUESTION MAP</p><h1>Review question-to-PDF mappings</h1>
+  <p>{{ assessment.source_pdf_filename }} · {{ assessment.source_pdf_page_count }} pages. Extracted question blocks are suggestions; correct page and text here. Questions without a clearly numbered block stay unmapped until reviewed.</p>
+  <form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {% for question in questions %}{% set stat = stats.get(question.question_number, {}) %}<article class="border rounded p-3 mb-3">
+      <div class="d-flex justify-content-between gap-3 flex-wrap"><div><h2 class="h5">Question {{ question.question_number }}</h2><p class="mb-1">Answer key: <strong>{{ question.correct_answer }}</strong> · Objective: {{ question.learning_objective }}</p><p class="small mb-0">{{ 'A: ' ~ question.option_a }} · {{ 'B: ' ~ question.option_b }} · {{ 'C: ' ~ question.option_c }} · {{ 'D: ' ~ question.option_d }}{% if question.option_e %} · {{ 'E: ' ~ question.option_e }}{% endif %}</p></div>
+      <div class="text-end">{% if stat.get('valid_responses') %}<strong>{{ stat.get('incorrect') }}/{{ stat.get('valid_responses') }}</strong> incorrect ({{ '%.1f'|format(stat.get('incorrect') / stat.get('valid_responses') * 100) }}%)<div class="small text-muted">Valid nonblank answers</div>{% else %}<span class="text-muted">No finalized answers yet</span>{% endif %}</div></div>
+      <input type="hidden" name="question_id" value="{{ question.id }}">
+      <div class="row g-2 mt-2"><div class="col-md-2"><label class="form-label" for="source-page-{{ question.id }}">PDF page</label><input class="form-control" id="source-page-{{ question.id }}" name="source_pdf_page" type="number" min="1" max="{{ assessment.source_pdf_page_count }}" value="{{ question.source_pdf_page or '' }}"></div>
+      <div class="col-md-10"><label class="form-label" for="source-text-{{ question.id }}">Question text in original PDF</label><textarea class="form-control" id="source-text-{{ question.id }}" name="source_pdf_excerpt" rows="4" maxlength="3000" placeholder="No clear match found; review the PDF and paste the relevant question text here.">{{ question.source_pdf_excerpt or '' }}</textarea></div></div>
+    </article>{% endfor %}
+    <button class="btn btn-primary">Save reviewed question mappings</button>
+  </form>
+</section>
+{% endblock %}

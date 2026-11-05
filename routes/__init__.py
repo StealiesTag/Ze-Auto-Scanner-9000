@@ -6,6 +6,7 @@ from .assessment_routes import assessment_bp
 from .dashboard_routes import dashboard_bp
 from .scanning_routes import scanning_bp
 from .student_routes import student_bp
+from .canvas_routes import canvas_bp
 
 
 def register_blueprints(app):
@@ -17,4 +18,5 @@ def register_blueprints(app):
     app.register_blueprint(automatic_scanning_bp)
     app.register_blueprint(camera_api_bp)
     app.register_blueprint(analytics_bp)
+    app.register_blueprint(canvas_bp)
     return app

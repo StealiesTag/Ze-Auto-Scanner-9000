@@ -40,8 +40,11 @@ def create_app(config_name: str = "default") -> Flask:
             or not 0 < app.config["CAMERA_MIN_PAGE_CHANGE_RATIO"] <= 1
             or not 0 < app.config["CAMERA_MIN_PAGE_AREA_RATIO"] <= 1
             or not 0 <= app.config["CAMERA_MIN_MARKER_CONFIDENCE"] <= 1
+            or not 0 <= app.config["CAMERA_AUTO_FINALIZE_MIN_CONFIDENCE"] <= 1
             or app.config["CAMERA_POLL_INTERVAL_SECONDS"] <= 0
             or app.config["ESP32_REQUEST_TIMEOUT_SECONDS"] <= 0
+            or app.config["MUSE_TIMEOUT_SECONDS"] <= 0
+            or app.config["MUSE_MIN_INTERVAL_SECONDS"] <= 0
             or app.config["PAPARAZZI_CAMERA_POLL_INTERVAL"] <= 0
             or app.config["PAPARAZZI_CAMERA_TIMEOUT"] <= 0
             or app.config["CAPTURE_QUEUE_CAPACITY"] < 1):
@@ -70,7 +73,7 @@ def create_app(config_name: str = "default") -> Flask:
     def internal_error(error):
         app.logger.exception("Unhandled request failed (%s)", type(error).__name__)
         db.session.rollback()
-        return render_template("error.html", status_code=500, message="The request could not be completed. No changes were saved."), 500
+        return render_template("error.html", status_code=500, message="The request could not be completed. Check the relevant assessment or scan list before retrying."), 500
 
     return app
 

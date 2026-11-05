@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}Canvas student matching{% endblock %}
+{% block content %}
+<section class="card"><a href="{{ url_for('canvas.assessment_setup', assessment_id=assessment.id) }}">&larr; {{ assessment.title }}</a><h1 class="mt-3">Verify student ID matches</h1>
+  <p>Automatic matching uses exact SIS user ID or SIS login ID values, preserving leading zeroes. Names are never used for automatic matching. Manual choices below are saved as teacher-verified mappings for this Canvas course.</p>
+  <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Paparazzi ID</th><th>Paparazzi student</th><th>Saved mapping</th><th>Choose Canvas roster member</th><th></th></tr></thead><tbody>
+  {% for student in students %}{% set saved = existing.get(student.student_number) %}<tr><td><code>{{ student.student_number }}</code></td><td>{{ student.name }}</td><td>{% if saved %}Canvas user {{ saved.canvas_user_id }} · teacher verified{% else %}No manual mapping{% endif %}</td><td>
+    <form method="post" action="{{ url_for('canvas.map_student', assessment_id=assessment.id) }}" class="d-flex gap-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="student_number" value="{{ student.student_number }}"><select class="form-select" name="canvas_user_id" required><option value="">Choose only after confirming the person</option>{% for user in canvas_users %}<option value="{{ user.id }}" {% if saved and saved.canvas_user_id == user.id|string %}selected{% endif %}>{{ user.name or user.short_name }} · Canvas {{ user.id }}{% if user.sis_user_id %} · SIS {{ user.sis_user_id }}{% endif %}{% if user.sis_login_id %} · Login {{ user.sis_login_id }}{% endif %}</option>{% endfor %}</select><button class="btn btn-sm btn-outline-primary">Save match</button></form>
+  </td></tr>{% else %}<tr><td colspan="5" class="text-muted">No Paparazzi students are enrolled in this class section.</td></tr>{% endfor %}
+  </tbody></table></div>
+  <a class="btn btn-primary" href="{{ url_for('canvas.grade_preview', assessment_id=assessment.id) }}">Continue to grade preview</a>
+</section>
+{% endblock %}

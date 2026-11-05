@@ -117,21 +117,22 @@ def ingest_camera_image_bytes(
             return IngestionResult({
                 "success": True, "status": "rejected",
                 "reason": validation.get("reason") or "invalid_image",
-                "message": validation.get("message") or "The image does not contain a confidently validated V3 answer sheet.",
+                "message": validation.get("message") or "The image does not contain a confidently validated Paparazzi answer sheet.",
                 "detected_markers": validation["detected_markers"],
                 "marker_coordinates": validation["marker_coordinates"],
                 "geometry_valid": validation["geometry_valid"], "confidence": validation["confidence"],
+                "locator_source": validation.get("locator_source"),
             })
 
         control = db.session.get(ScannerControl, 1)
         assessment_id = control.assessment_id if control else None
         assessment = db.session.get(Assessment, assessment_id) if assessment_id else None
-        if assessment is None or assessment.total_questions not in {20, 50, 100}:
+        if assessment is None or assessment.answer_sheet_version != "V4" or assessment.total_questions not in {20, 50}:
             db.session.rollback()
-            return IngestionResult({"success": False, "status": "error", "reason": "assessment_not_selected", "message": "Select a complete V3 assessment in Automatic Scanning before accepting images."}, 409)
-        if len(assessment.questions) != assessment.total_questions or any(not question.option_e.strip() for question in assessment.questions):
+            return IngestionResult({"success": False, "status": "error", "reason": "assessment_not_selected", "message": "Select a complete 20- or 50-question assessment in Automatic Scanning before accepting images."}, 409)
+        if len(assessment.questions) != assessment.total_questions:
             db.session.rollback()
-            return IngestionResult({"success": False, "status": "error", "reason": "assessment_not_ready", "message": "The selected assessment needs a complete A-E answer key."}, 409)
+            return IngestionResult({"success": False, "status": "error", "reason": "assessment_not_ready", "message": "The selected assessment needs a complete answer key."}, 409)
 
         machine = configured_machine()
         machine.restore(camera_state.controller_state)
@@ -158,6 +159,7 @@ def ingest_camera_image_bytes(
                 "capture_id": capture_id, "detected_markers": validation["detected_markers"],
                 "marker_coordinates": validation["marker_coordinates"],
                 "geometry_valid": validation["geometry_valid"], "confidence": validation["confidence"],
+                "locator_source": validation.get("locator_source"),
             })
 
         machine.begin_queueing()
@@ -167,6 +169,7 @@ def ingest_camera_image_bytes(
             "geometry_valid": validation["geometry_valid"], "confidence": validation["confidence"],
             "sheet_sufficiently_visible": validation["sheet_sufficiently_visible"],
             "bottom_markers_visible": validation["bottom_markers_visible"],
+            "locator_source": validation.get("locator_source"),
         }
         queued_file = Path(current_app.config["UPLOAD_FOLDER"]).resolve() / f"capture-{capture_id}{validation['extension']}"
         try:
@@ -189,6 +192,7 @@ def ingest_camera_image_bytes(
             "detected_markers": validation["detected_markers"],
             "marker_coordinates": validation["marker_coordinates"],
             "geometry_valid": validation["geometry_valid"], "confidence": validation["confidence"],
+            "locator_source": validation.get("locator_source"),
             "job_id": job.id,
         }, 202)
     except QueueFullError as error:

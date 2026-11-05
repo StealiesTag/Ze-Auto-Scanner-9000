@@ -16,6 +16,11 @@ class ScannerControl(db.Model):
     marker_status = db.Column(db.JSON, nullable=False, default=dict)
     stability_status = db.Column(db.Boolean, nullable=False, default=False)
     last_error = db.Column(db.String(1000), nullable=True)
+    session_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    session_ended_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    session_camera_baseline = db.Column(db.JSON, nullable=False, default=dict)
+    session_rejected_frames = db.Column(db.Integer, nullable=False, default=0)
+    session_duplicate_frames = db.Column(db.Integer, nullable=False, default=0)
     updated_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 

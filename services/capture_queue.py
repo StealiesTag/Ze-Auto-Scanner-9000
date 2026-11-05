@@ -13,9 +13,9 @@ from sqlalchemy import func, select, text
 from werkzeug.datastructures import FileStorage
 
 from extensions import db
-from models import Assessment, CaptureJob, ScanDraft, ScannerControl
+from models import Assessment, CaptureJob, ScanDraft, ScannerControl, Student
 from services.image_processor import ImageProcessingError
-from services.paparazzi_v3_submission_service import create_v3_scan_draft
+from services.paparazzi_v3_submission_service import confirm_v3_scan_draft, create_v3_scan_draft
 
 
 PENDING_STATUSES = ("QUEUED", "PROCESSING")
@@ -45,8 +45,8 @@ def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, ap
     if len(image_bytes) > int(app_config["MAX_CONTENT_LENGTH"]):
         raise ImageProcessingError("The captured image exceeds the configured upload size limit.")
     assessment = db.session.get(Assessment, assessment_id)
-    if assessment is None or assessment.total_questions not in {20, 50, 100}:
-        raise ValueError("Select an existing 20, 50, or 100 question assessment.")
+    if assessment is None or assessment.total_questions not in {20, 50}:
+        raise ValueError("Select an existing 20- or 50-question assessment.")
     capture_id = capture_id or uuid.uuid4().hex
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", capture_id):
         raise ValueError("Capture identifiers may contain 1-64 letters, digits, hyphens, or underscores.")
@@ -159,6 +159,33 @@ def process_job(job_id: int, app_config: dict) -> CaptureJob:
             upload, app_config, assessment, assessment.total_questions,
             capture_id=job.capture_id, original_filename=job.image_filename,
         )
+        student = db.session.get(Student, draft.student_id) if draft.student_id else None
+        student_id_detection = draft.student_id_detection or {}
+        answers = draft.recognized_answers or []
+        minimum_confidence = float(app_config.get("CAMERA_AUTO_FINALIZE_MIN_CONFIDENCE", 0.80))
+        can_auto_finalize = bool(
+            student
+            and student_id_detection.get("status") == "detected"
+            and student_id_detection.get("student_id") == student.student_number
+            and float(student_id_detection.get("confidence") or 0.0) >= minimum_confidence
+            and not (draft.processing_notes or {}).get("warnings")
+            and len(answers) == assessment.total_questions
+            and all(
+                item.get("status") in {"detected", "blank"}
+                and float(item.get("confidence") or 0.0) >= minimum_confidence
+                for item in answers
+            )
+        )
+        if can_auto_finalize:
+            confirm_v3_scan_draft(
+                draft,
+                student,
+                [item["answer"] if item["status"] == "detected" else None for item in answers],
+            )
+            completed_job = db.session.get(CaptureJob, job_id)
+            if completed_job is None:
+                raise RuntimeError("The capture job disappeared during automatic grading.")
+            return completed_job
         job.draft_id = draft.id
         job.status = "NEEDS_REVIEW"
         job.completed_at = datetime.now(timezone.utc)

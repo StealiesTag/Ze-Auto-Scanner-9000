@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Blank printer feed — {{ page_count }} pages</title>
+  <style>
+    @page { size: A4 portrait; margin: 0; }
+    html, body { margin: 0; padding: 0; background: #fff; }
+    .feed-page { width: 210mm; height: 297mm; break-after: page; page-break-after: always; }
+    .feed-page:last-of-type { break-after: auto; page-break-after: auto; }
+    .feed-page:last-child { break-after: auto; page-break-after: auto; }
+    @media screen {
+      body { color: #222; font: 16px/1.5 system-ui, sans-serif; padding: 24px; }
+      .notice { max-width: 720px; margin: 0 auto 24px; }
+      .feed-page { display: none; }
+    }
+    @media print { .notice { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="notice">One blank A4 feed page. Paparazzi will capture a still six seconds after print is initiated.</div>
+  {% for _page in range(page_count) %}<div class="feed-page" aria-hidden="true"></div>{% endfor %}
+  <script>
+    const step = {{ step|int }};
+    window.addEventListener('load', () => window.setTimeout(() => {
+      if (window.parent !== window) window.parent.postMessage({ type: 'paparazzi-print-started', step }, window.location.origin);
+      window.print();
+    }, 350));
+  </script>
+</body>
+</html>

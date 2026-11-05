@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block title %}Canvas mapping · {{ assessment.title }}{% endblock %}
+{% block content %}
+<section class="card"><a href="{{ url_for('canvas.settings') }}">&larr; Canvas</a><p class="eyebrow mt-3">ASSESSMENT MAPPING</p><h1>{{ assessment.title }}</h1>
+  <p>{{ assessment.total_questions }} questions · {{ assessment.class_section }} · only finalized grades are included.</p>
+  {% if api_error %}<div class="alert alert-danger">{{ api_error }}</div>{% endif %}
+  {% if not courses and not api_error %}<p class="alert alert-warning">Connect Canvas before selecting a course.</p>{% endif %}
+  <h2 class="h4">1. Choose the teacher's Canvas course</h2>
+  <form method="post" action="{{ url_for('canvas.select_course', assessment_id=assessment.id) }}" class="d-flex gap-2 flex-wrap mb-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select class="form-select flex-grow-1" name="course_id" required><option value="">Select an active Canvas course</option>{% for course in courses %}<option value="{{ course.id }}" {% if mapping and mapping.course_id == course.id|string %}selected{% endif %}>{{ course.name }} · {{ course.id }}</option>{% endfor %}</select><button class="btn btn-outline-primary">Save course</button>
+  </form>
+  {% if mapping %}<p>Selected: <strong>{{ mapping.course_name }}</strong> · Canvas course {{ mapping.course_id }}</p>{% endif %}
+  {% if mapping %}<h2 class="h4">2. Choose an ordinary points-based assignment</h2>
+  <form method="post" action="{{ url_for('canvas.select_assignment', assessment_id=assessment.id) }}" class="d-flex gap-2 flex-wrap mb-3">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select class="form-select flex-grow-1" name="assignment_id" required><option value="">Select assignment</option>{% for item in assignments %}<option value="{{ item.id }}" {% if mapping.assignment_id == item.id|string %}selected{% endif %}>{{ item.name }} · {{ item.id }} · {{ item.points_possible if item.points_possible is not none else 'no points' }} pts · {{ item.grading_type }}</option>{% endfor %}</select><button class="btn btn-outline-primary">Save assignment</button>
+  </form>
+  <p class="small text-muted">Quiz assignments, group assignments, non-points grading, and assignments without positive points are excluded.</p>{% endif %}
+  {% if mapping and mapping.assignment_id %}<div class="alert alert-info">Grade conversion: Paparazzi score ÷ {{ assessment.total_questions }}-question assessment points × {{ mapping.points_possible }} Canvas points, rounded to the nearest 0.01 point.</div>
+  <div class="d-flex gap-2 flex-wrap"><a class="btn btn-outline-primary" href="{{ url_for('canvas.roster', assessment_id=assessment.id) }}">Review student ID matches</a><a class="btn btn-primary" href="{{ url_for('canvas.grade_preview', assessment_id=assessment.id) }}">Preview grades for Canvas</a></div>{% endif %}
+</section>
+{% endblock %}

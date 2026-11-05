@@ -118,7 +118,10 @@ def build_analytics(assessment_id: int | None = None, recommendation_threshold: 
                 },
             })
 
-        objective_filters = [Response.correctness.is_not(None), Response.answer.is_not(None), Submission.processing_status == "processed"]
+        objective_filters = [
+            Response.correctness.is_not(None), Response.answer.is_not(None),
+            Submission.processing_status == "processed", Submission.review_status != "required",
+        ]
         if assessment_id is not None:
             objective_filters.append(Submission.assessment_id == assessment_id)
         objective_rows = db.session.execute(

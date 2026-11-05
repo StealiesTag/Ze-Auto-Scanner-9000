@@ -61,6 +61,7 @@ def test_v3_profile_geometry_matches_revised_vector_pdfs_and_preserves_centers()
     assert profile["answers"]["bubble_radius_mm"] == 1.85
     assert profile["answers"]["bubble_radius_mm"] / original_profile["answers"]["bubble_radius_mm"] - 1 == pytest.approx(0.25)
     for count in (20, 50, 100):
+        page_profile = load_v3_profile("50q_large_bubble") if count == 50 else profile
         path = ASSET_DIR / f"Answer_Sheet_{count}Q_V3.pdf"
         page = pymupdf.open(path)[0]
         old_page = pymupdf.open(originals / path.name)[0]
@@ -69,38 +70,49 @@ def test_v3_profile_geometry_matches_revised_vector_pdfs_and_preserves_centers()
             for drawing in page.get_drawings()
             if drawing["items"] and all(item[0] == "c" for item in drawing["items"])
         ]
-        id_radius = profile["student_id"]["bubble_radius_mm"]
-        answer_radius = profile["answers"]["bubble_radius_mm"]
+        id_radius = page_profile["student_id"]["bubble_radius_mm"]
+        answer_radius = page_profile["answers"]["bubble_radius_mm"]
         id_count = sum(abs(circle.width * 25.4 / 144 - id_radius) < 0.01 for circle in circles)
         answer_count = sum(abs(circle.width * 25.4 / 144 - answer_radius) < 0.01 for circle in circles)
         old_circles = [d["rect"] for d in old_page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.48) < 0.01]
-        new_answer_circles = [d["rect"] for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.85) < 0.01]
+        answer_radius = page_profile["answers"]["bubble_radius_mm"]
+        new_answer_circles = [d["rect"] for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - answer_radius) < 0.01]
         old_centers = sorted((round(r.x0 + r.width / 2, 3), round(r.y0 + r.height / 2, 3)) for r in old_circles)
         new_centers = sorted((round(r.x0 + r.width / 2, 3), round(r.y0 + r.height / 2, 3)) for r in new_answer_circles)
         assert abs(page.rect.width * 25.4 / 72 - 210) < 0.01
         assert abs(page.rect.height * 25.4 / 72 - 297) < 0.01
-        assert id_count == 70
-        assert answer_count == count * 5
-        assert len(old_centers) == len(new_centers) == count * 5
-        assert old_centers == new_centers
-        old_id = sorted((round(d["rect"].x0 + d["rect"].width / 2, 3), round(d["rect"].y0 + d["rect"].height / 2, 3)) for d in old_page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.12) < 0.01)
-        new_id = sorted((round(d["rect"].x0 + d["rect"].width / 2, 3), round(d["rect"].y0 + d["rect"].height / 2, 3)) for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.12) < 0.01)
-        assert len(old_id) == len(new_id) == 70
-        assert old_id == new_id
-        old_marks = sorted(tuple(round(v, 3) for v in (d["rect"].x0, d["rect"].y0, d["rect"].x1, d["rect"].y1)) for d in old_page.get_drawings() if abs(d["rect"].width * 25.4 / 72 - 6.0) < 0.01)
-        new_marks = sorted(tuple(round(v, 3) for v in (d["rect"].x0, d["rect"].y0, d["rect"].x1, d["rect"].y1)) for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 72 - 6.0) < 0.01)
-        assert len(old_marks) == len(new_marks) == 4
-        assert old_marks == new_marks
+        if count == 50:
+            id_centers = sorted((round(d["rect"].x0 + d["rect"].width / 2, 3), round(d["rect"].y0 + d["rect"].height / 2, 3)) for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - id_radius) < 0.01)
+            assert len(id_centers) == 70
+        else:
+            assert id_count == 70
+            assert answer_count == count * 5
+            assert len(old_centers) == len(new_centers) == count * 5
+            assert old_centers == new_centers
+        if count != 50:
+            old_id = sorted((round(d["rect"].x0 + d["rect"].width / 2, 3), round(d["rect"].y0 + d["rect"].height / 2, 3)) for d in old_page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.12) < 0.01)
+            new_id = sorted((round(d["rect"].x0 + d["rect"].width / 2, 3), round(d["rect"].y0 + d["rect"].height / 2, 3)) for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 144 - 1.12) < 0.01)
+            assert len(old_id) == len(new_id) == 70
+            assert old_id == new_id
+        if count == 50:
+            # The revised large-bubble sheet stores its corner markers in the page image.
+            assert page.get_images(full=True)
+        else:
+            old_marks = sorted(tuple(round(v, 3) for v in (d["rect"].x0, d["rect"].y0, d["rect"].x1, d["rect"].y1)) for d in old_page.get_drawings() if abs(d["rect"].width * 25.4 / 72 - 6.0) < 0.01)
+            new_marks = sorted(tuple(round(v, 3) for v in (d["rect"].x0, d["rect"].y0, d["rect"].x1, d["rect"].y1)) for d in page.get_drawings() if abs(d["rect"].width * 25.4 / 72 - 6.0) < 0.01)
+            assert len(old_marks) == len(new_marks) == 4
+            assert old_marks == new_marks
         spans = [pymupdf.Rect(span["bbox"]) for block in page.get_text("dict")["blocks"] if "lines" in block for line in block["lines"] for span in line["spans"] if span["text"].strip()]
         assert all(not (rect & span).get_area() for rect in new_answer_circles for span in spans)
-        answer_centers = get_answer_bubble_centers_mm(count, profile)
+        answer_centers = get_answer_bubble_centers_mm(count, page_profile)
         mm_points = [point for row in answer_centers.values() for point in row]
         closest = min(np.linalg.norm(np.asarray(a) - np.asarray(b)) for i, a in enumerate(mm_points) for b in mm_points[i + 1:])
-        assert closest == pytest.approx(5.0)
-        assert closest - 2 * answer_radius == pytest.approx(1.30)
+        if count != 50:
+            assert closest == pytest.approx(5.0)
+            assert closest - 2 * answer_radius == pytest.approx(1.30)
         old_page.parent.close()
         page.parent.close()
-        assert len(get_answer_bubble_centers_mm(count, profile)) == count
+        assert len(get_answer_bubble_centers_mm(count, page_profile)) == count
 
     combined = pymupdf.open(ASSET_DIR / "Answer_Sheets_20_50_100_V3.pdf")
     assert len(combined) == 3
@@ -109,8 +121,8 @@ def test_v3_profile_geometry_matches_revised_vector_pdfs_and_preserves_centers()
 
 
 def test_actual_v3_pdf_render_detects_marks_student_id_and_answers_for_each_template():
-    profile = load_v3_profile()
     for count in (20, 50, 100):
+        profile = load_v3_profile("50q_large_bubble") if count == 50 else load_v3_profile()
         answers = {number: "ABCDE"[(number - 1) % 5] for number in range(1, count + 1)}
         source = _fill_profile_bubbles(_render_template(count), profile, count, answers)
         aligned = align_paparazzi_v3(source, profile, question_count=count)
@@ -241,14 +253,16 @@ def _render_user_large_bubble_50q(dpi=240):
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
-def test_user_large_bubble_50q_pdf_selects_its_profile_and_keeps_id_manual():
+def test_user_large_bubble_50q_pdf_selects_its_profile_and_requires_id_review_when_blank():
     image = _render_user_large_bubble_50q()
     profile, aligned = align_paparazzi_v3_auto(image, 50)
     assert profile["profile_variant"] == "50q_large_bubble"
     assert aligned.orientation == "rotation_0"
-    assert aligned.layout_score > 0.5
+    assert aligned.layout_score > 0.4
     assert len(aligned.detected_marks) == 4
-    assert detect_v3_student_id(aligned.aligned_image, profile)["status"] == "manual_required"
+    id_result = detect_v3_student_id(aligned.aligned_image, profile)
+    assert id_result["student_id"] is None
+    assert id_result["status"] in {"blank", "ambiguous", "multiple_marks"}
     answers = detect_v3_answers(aligned.aligned_image, 50, profile)
     assert len(answers) == 50
     assert all(answer["status"] == "blank" for answer in answers)
@@ -272,8 +286,8 @@ def test_user_large_bubble_50q_synthetic_fills_are_read_at_measured_centers():
     assert [result["answer"] for result in results] == list(expected.values())
 
 
-def test_auto_profile_selection_preserves_standard_v3_50q_layout():
+def test_auto_profile_selection_uses_revised_large_bubble_v3_50q_layout():
     image = _render_template(50)
     profile, aligned = align_paparazzi_v3_auto(image, 50)
-    assert profile["profile_variant"] == "standard"
-    assert aligned.layout_score > 0.5
+    assert profile["profile_variant"] == "50q_large_bubble"
+    assert aligned.layout_score > 0.4

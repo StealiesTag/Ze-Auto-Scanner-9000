@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% block title %}Canvas sync history{% endblock %}
+{% block content %}
+<section class="card"><a href="{{ url_for('canvas.settings') }}">&larr; Canvas</a><h1 class="mt-3">Canvas grade sync history</h1><p>Latest 500 sync events. Successful uploads are verified against Canvas after each grade update.</p>
+  <div class="table-responsive"><table class="table"><thead><tr><th>Time</th><th>Assessment</th><th>Course</th><th>Assignment</th><th>Paparazzi ID</th><th>Canvas user ID</th><th>Grade</th><th>Previous grade</th><th>Status</th><th>Details</th></tr></thead><tbody>
+  {% for row in history %}<tr><td>{{ row.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ row.assessment.title if row.assessment else row.assessment_id }}</td><td>{{ row.course_id }}</td><td>{{ row.assignment_id }}</td><td>{{ row.student_number }}</td><td>{{ row.canvas_user_id or '—' }}</td><td>{{ row.posted_grade if row.posted_grade is not none else '—' }}</td><td>{{ row.previous_grade if row.previous_grade is not none else '—' }}</td><td>{{ row.status }}</td><td>{{ row.error_detail or '—' }}{% if row.status == 'failed' %}<form method="post" action="{{ url_for('canvas.retry_sync', sync_id=row.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-warning mt-1">Retry safely</button></form>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="10" class="text-muted">No Canvas sync history yet.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

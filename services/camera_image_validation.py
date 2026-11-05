@@ -1,10 +1,11 @@
-"""Lightweight upload decoding and V3 registration-marker validation."""
+"""Lightweight upload decoding and shared Paparazzi registration-marker validation."""
 from __future__ import annotations
 
 import cv2
 import numpy as np
 
 from services.marker_detection import detect_v3_registration_markers
+from services.muse_marker_locator import configured_muse_locator
 
 
 SUPPORTED_TYPES = {
@@ -18,7 +19,7 @@ def validate_camera_image(
     content_type: str,
     app_config: dict,
 ) -> dict:
-    """Decode bytes and validate four V3 markers; never touches OMR or the database."""
+    """Decode bytes and validate the four official registration markers without running OMR or database work."""
     normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
     image_format = SUPPORTED_TYPES.get(normalized_type)
     if image_format is None:
@@ -39,6 +40,8 @@ def validate_camera_image(
     detection = detect_v3_registration_markers(
         image,
         min_page_area_ratio=float(app_config["CAMERA_MIN_PAGE_AREA_RATIO"]),
+        min_confidence=float(app_config["CAMERA_MIN_MARKER_CONFIDENCE"]),
+        muse_locator=configured_muse_locator(app_config),
     )
     confidence = float(detection.get("confidence") or 0.0)
     confidence_valid = confidence >= float(app_config["CAMERA_MIN_MARKER_CONFIDENCE"])
@@ -57,6 +60,7 @@ def validate_camera_image(
         "marker_coordinates": detection.get("marker_coordinates") or {},
         "geometry_valid": bool(detection.get("geometry_valid")),
         "confidence": confidence,
+        "locator_source": detection.get("locator_source", "opencv"),
         "bottom_markers_visible": bool(detection.get("bottom_markers_visible")),
         "sheet_sufficiently_visible": bool(detection.get("sheet_sufficiently_visible")),
         "page_signature": detection.get("page_signature"),
@@ -74,6 +78,7 @@ def _invalid(reason: str, message: str) -> dict:
         "marker_coordinates": {},
         "geometry_valid": False,
         "confidence": 0.0,
+        "locator_source": None,
         "bottom_markers_visible": False,
         "sheet_sufficiently_visible": False,
         "page_signature": None,

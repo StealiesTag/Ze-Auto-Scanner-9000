@@ -10,11 +10,11 @@ document.addEventListener('DOMContentLoaded', () => {
         row.querySelector('legend').textContent = `Question ${index + 1}`;
         row.querySelector('.remove-question').disabled = rows.length === 1;
       });
-      addQuestionButton.disabled = rows.length >= 100;
+  addQuestionButton.disabled = rows.length >= 50;
     };
 
     addQuestionButton.addEventListener('click', () => {
-      if (questionList.querySelectorAll('.question-editor').length >= 100) return;
+    if (questionList.querySelectorAll('.question-editor').length >= 50) return;
       questionList.append(questionTemplate.content.cloneNode(true));
       updateQuestionControls();
       questionList.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -89,10 +89,102 @@ document.addEventListener('DOMContentLoaded', () => {
   const automaticScanner = document.querySelector('#automatic-scanner');
   if (automaticScanner) {
     const statusUrl = automaticScanner.dataset.statusUrl;
+    const printStepUrl = automaticScanner.dataset.printStepUrl;
+    const captureStepUrl = automaticScanner.dataset.captureStepUrl;
+    let printCycleRunning = false;
+    const silentPrintCheckbox = document.querySelector('input[name="silent_print_configured"]');
+    if (silentPrintCheckbox && window.localStorage.getItem('paparazziSilentPrintConfigured') === 'yes') {
+      silentPrintCheckbox.checked = true;
+    }
+    if (silentPrintCheckbox) {
+      silentPrintCheckbox.addEventListener('change', () => {
+        if (silentPrintCheckbox.checked) window.localStorage.setItem('paparazziSilentPrintConfigured', 'yes');
+        else window.localStorage.removeItem('paparazziSilentPrintConfigured');
+      });
+    }
     const setText = (id, value) => {
       const element = document.getElementById(id);
       if (element) element.textContent = value;
     };
+    const waitForPrintInitiation = (step) => new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        window.removeEventListener('message', onMessage);
+        reject(new Error('The browser did not start the print job. Check the printer and silent-print setup, then resume scanning.'));
+      }, 30000);
+      const onMessage = (event) => {
+        if (event.origin !== window.location.origin || event.data?.type !== 'paparazzi-print-started' || event.data.step !== step) return;
+        window.clearTimeout(timeout);
+        window.removeEventListener('message', onMessage);
+        resolve();
+      };
+      window.addEventListener('message', onMessage);
+      const printUrl = new URL(printStepUrl, window.location.href);
+      printUrl.searchParams.set('step', step);
+      printUrl.searchParams.set('cache', Date.now());
+      document.getElementById('printer-feed-job').src = printUrl.toString();
+    });
+
+    const runOnePagePrintCycle = async () => {
+      if (printCycleRunning) return;
+      printCycleRunning = true;
+      try {
+        while (true) {
+          const statusResponse = await fetch(statusUrl, { headers: { Accept: 'application/json' } });
+          const status = await statusResponse.json();
+          if (!status.ok || !status.active || status.paused) break;
+          if (Number(status.queue?.capacity) >= Number(status.queue?.capacity_limit)) {
+            setText('camera-error', 'The capture queue is full. Scanning paused before printing another page; resume after queued scans finish.');
+            const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
+            await fetch('/scanning/automatic/pause', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({ csrf_token: csrf }),
+            });
+            break;
+          }
+          const retryCurrentPage = Boolean(status.marker_status?.retry_current_page);
+          const step = retryCurrentPage
+            ? Number(status.marker_status.retry_step ?? status.printer_step)
+            : Number(status.printer_step || 0) + 1;
+          if (retryCurrentPage) {
+            setText('capture-state', 'RECAPTURING LAST SHEET FOR MUSE ALIGNMENT');
+          } else {
+            await waitForPrintInitiation(step);
+            setText('capture-state', 'WAITING 6s AFTER PRINT START');
+            await new Promise((resolve) => window.setTimeout(resolve, 6000));
+          }
+          const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
+          const body = new URLSearchParams({ step: String(step), csrf_token: csrf });
+          const response = await fetch(captureStepUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+            body,
+          });
+          const result = await response.json();
+          if (!response.ok || !result.ok) {
+            setText('camera-error', result.error || 'The capture step failed. Scanning has paused.');
+            break;
+          }
+          if (result.done) {
+            setText('capture-state', 'AUTO_STOPPED_DUPLICATE_PAGE');
+            setText('camera-error', result.message || 'The same page was captured twice. Scanning stopped.');
+            break;
+          }
+          if (result.alignment_pending) setText('capture-state', 'QUEUED_FOR_MUSE_ALIGNMENT');
+        }
+      } catch (error) {
+        setText('camera-error', error.message || 'The printer step failed. Scanning has paused.');
+        const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
+        await fetch('/scanning/automatic/pause', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ csrf_token: csrf }),
+        }).catch(() => {});
+      } finally {
+        printCycleRunning = false;
+      }
+    };
+
     const renderJobs = (jobs) => {
       const body = document.getElementById('recent-captures');
       if (!body) return;
@@ -178,6 +270,19 @@ document.addEventListener('DOMContentLoaded', () => {
         setText('page-visible', data.marker_status?.sheet_sufficiently_visible ? 'Yes' : 'No');
         setText('stability', data.stability_status ? 'Yes' : 'No');
         setText('capture-state', data.state || '—');
+        if (data.active && !data.paused) {
+          if (window.localStorage.getItem('paparazziSilentPrintConfigured') === 'yes') runOnePagePrintCycle();
+          else setText('camera-error', 'Configure and confirm silent printing below before the next printer step can run.');
+        }
+        const session = data.session || {};
+        setText('session-state', session.state || 'READY');
+        setText('session-captured', session.valid_sheets_captured ?? 0);
+        setText('session-awaiting', session.images_awaiting_processing ?? 0);
+        setText('session-graded', session.successfully_graded ?? 0);
+        setText('session-review', session.review_required ?? 0);
+        setText('session-rejected', session.rejected_images ?? 0);
+        setText('session-duplicates', session.duplicate_captures ?? 0);
+        setText('session-last-capture', session.last_successful_capture_at ? new Date(session.last_successful_capture_at).toLocaleString() : '—');
         setText('camera-error', data.last_error || '');
         const ingestion = data.ingestion || {};
         setText('ingest-received', ingestion.received ?? 0);
@@ -187,7 +292,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setText('ingest-last-received', ingestion.last_received_at ? new Date(ingestion.last_received_at).toLocaleString() : '—');
         const poller = data.camera_poller || {};
         setText('poller-camera-id', poller.camera_id || '—');
-        setText('poller-running', poller.running ? 'Running' : 'Stopped');
+        setText('poller-running', poller.running ? (poller.enabled ? 'Polling' : 'Idle (polling off)') : 'Stopped');
         setText('poller-connection', poller.connection_status || 'stopped');
         setText('poller-last-fetch', poller.last_fetch_at ? new Date(poller.last_fetch_at).toLocaleString() : '—');
         setText('poller-last-error', poller.last_error || '—');

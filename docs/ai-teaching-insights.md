@@ -11,13 +11,14 @@ Question and objective performance signals are calculated deterministically befo
 Set these values in the ignored local `.env` file:
 
 ```env
-AI_BASE_URL=https://api.openai.com/v1
-AI_MODEL=your-json-capable-model
-AI_API_KEY=your-provider-key
-AI_TIMEOUT_SECONDS=30
+AI_BASE_URL=https://api.meta.ai/v1
+AI_MODEL=muse-spark-1.3
+AI_REASONING_EFFORT=low
+MODEL_API_KEY=your-meta-model-api-key
+AI_TIMEOUT_SECONDS=180
 ```
 
-The service uses the OpenAI-compatible `/chat/completions` JSON interface. Keep credentials out of source control. Check the selected provider's retention and data-use terms before sending assessment aggregates. Without both a key and model, Analytics displays a clear unavailable state and keeps its deterministic reporting available. No AI request occurs on normal page load.
+The service uses Meta Model API's OpenAI-compatible `/chat/completions` JSON interface. `MODEL_API_KEY` is a separate Meta Model API credential; do not reuse `MUSE_API_KEY`, which is for the image locator. The application also accepts `META_MODEL_API_KEY` or the existing generic `AI_API_KEY`. Keep the key in the ignored local `.env` file and out of source control. Requests explicitly set `store: false`. Meta receives only the aggregate teaching payload described above, and only when a teacher requests suggestions. Without a key, Analytics keeps deterministic reporting available and shows the AI feature as unconfigured. No AI request occurs on normal page load.
 
 ## Cache and migration
 

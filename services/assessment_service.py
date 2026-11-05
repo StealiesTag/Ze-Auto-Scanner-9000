@@ -5,7 +5,8 @@ from decimal import Decimal, InvalidOperation
 from extensions import db
 from models import Assessment, Question
 
-ASSESSMENT_QUESTION_LIMIT = 100
+SUPPORTED_ANSWER_SHEET_COUNTS = {20, 50}
+ASSESSMENT_QUESTION_LIMIT = max(SUPPORTED_ANSWER_SHEET_COUNTS)
 
 
 def validate_assessment_payload(payload: dict) -> tuple[bool, list[str]]:
@@ -22,6 +23,8 @@ def validate_assessment_payload(payload: dict) -> tuple[bool, list[str]]:
         errors.append("Class or section is required.")
     if not questions:
         errors.append("At least one question is required.")
+    if len(questions) not in SUPPORTED_ANSWER_SHEET_COUNTS:
+        errors.append("Official answer sheets are available for assessments with exactly 20 or 50 questions.")
     if len(title) > 200 or len(subject) > 100 or len(class_section) > 100:
         errors.append("Assessment title, subject, or class section exceeds its allowed length.")
     if len(questions) > ASSESSMENT_QUESTION_LIMIT:
@@ -64,6 +67,7 @@ def create_assessment(payload: dict) -> Assessment:
         subject=payload["subject"].strip(),
         class_section=payload["class_section"].strip(),
         total_questions=len(payload["questions"]),
+        answer_sheet_version="V4",
     )
     assessment.questions = [
         Question(question_number=index, correct_answer=row["correct_answer"].strip().upper(),
@@ -86,6 +90,7 @@ def update_assessment(assessment: Assessment, payload: dict) -> Assessment:
     assessment.title = payload["title"].strip()
     assessment.subject = payload["subject"].strip()
     assessment.class_section = payload["class_section"].strip()
+    assessment.answer_sheet_version = "V4"
     assessment.questions.clear()
     assessment.questions.extend(
         Question(question_number=index, correct_answer=row["correct_answer"].strip().upper(),
@@ -116,4 +121,5 @@ def parse_assessment_form(form) -> dict:
                               "option_d": option_d, "option_e": option_e, "correct_answer": answer, "points": points,
                               "learning_objective": objective})
     return {"title": form.get("title", ""), "subject": form.get("subject", ""),
-            "class_section": form.get("class_section", ""), "questions": questions}
+            "class_section": form.get("class_section", ""),
+            "answer_sheet_version": "V4", "questions": questions}

@@ -1,14 +1,13 @@
 from pathlib import Path
 
 from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, send_file, url_for
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from extensions import db
 from models import AnswerCorrection, Assessment, Question, Response, ScanDraft, Student, Submission
 from services.grading_service import apply_manual_correction
 from services.image_processor import ImageProcessingError
 from services.paparazzi_v3_submission_service import confirm_v3_scan_draft, create_v3_scan_draft
-from services.submission_service import DuplicateSubmissionError, process_answer_sheet
 
 scanning_bp = Blueprint("scanning", __name__, url_prefix="/scanning")
 
@@ -17,7 +16,9 @@ def _upload_context(selection):
     pending = db.session.scalars(
         select(Submission).where(Submission.review_status == "required").order_by(Submission.submitted_at.desc())
     ).all()
-    assessments = db.session.scalars(select(Assessment).order_by(Assessment.title)).all()
+    assessments = db.session.scalars(
+        select(Assessment).where(Assessment.total_questions.in_((20, 50))).order_by(Assessment.title)
+    ).all()
     students = db.session.scalars(select(Student).order_by(Student.name)).all()
     drafts = db.session.scalars(select(ScanDraft).order_by(ScanDraft.created_at.desc())).all()
     return {"pending": pending, "drafts": drafts, "assessments": assessments, "students": students, "selection": selection}
@@ -26,76 +27,47 @@ def _upload_context(selection):
 @scanning_bp.route("/upload", methods=["GET", "POST"])
 def upload_page():
     if request.method == "POST":
-        sheet_format = request.form.get("sheet_format")
-        if sheet_format not in {"paparazzi_standard_v3", "legacy_paparazzi"}:
-            flash("Choose a sheet format before uploading.", "error")
-            return render_template("upload.html", **_upload_context(request.form))
         uploads = [upload for upload in request.files.getlist("answer_sheet") if upload and upload.filename]
         if not uploads:
             flash("Choose a JPEG or PNG answer sheet.", "error")
-        elif sheet_format == "paparazzi_standard_v3":
+        else:
             assessment_id = request.form.get("assessment_id", type=int)
             assessment = db.session.get(Assessment, assessment_id) if assessment_id else None
             if assessment is None:
                 flash("Select the assessment whose answer key matches this sheet.", "error")
-                return render_template("upload.html", **_upload_context(request.form))
-            question_count = request.form.get("question_count", type=int)
-            selected_student_id = request.form.get("student_id", type=int)
-            if len(uploads) == 1:
-                try:
-                    draft = create_v3_scan_draft(
-                        uploads[0], current_app.config, assessment, question_count, selected_student_id
-                    )
-                    flash("Sheet detected. Review the student ID and every answer before grading.", "success")
-                    return redirect(url_for("scanning.review_v3_draft", draft_id=draft.id))
-                except (ImageProcessingError, ValueError, OSError) as error:
-                    flash(str(error), "error")
+            elif assessment.answer_sheet_version != "V4":
+                flash("This assessment is not configured for an official answer sheet. Edit and save it before scanning.", "error")
+            elif assessment.total_questions not in {20, 50}:
+                flash("Choose an assessment with exactly 20 or 50 questions for an official sheet.", "error")
             else:
-                batch_results = []
-                for upload in uploads:
+                question_count = assessment.total_questions
+                selected_student_id = request.form.get("student_id", type=int)
+                if len(uploads) == 1:
                     try:
                         draft = create_v3_scan_draft(
-                            upload, current_app.config, assessment, question_count, selected_student_id
+                            uploads[0], current_app.config, assessment, question_count, selected_student_id
                         )
-                        batch_results.append({
-                            "filename": upload.filename,
-                            "url": url_for("scanning.review_v3_draft", draft_id=draft.id),
-                            "action": "Review detected sheet",
-                        })
+                        flash("Sheet detected. Review the student ID and every answer before grading.", "success")
+                        return redirect(url_for("scanning.review_v3_draft", draft_id=draft.id))
                     except (ImageProcessingError, ValueError, OSError) as error:
-                        batch_results.append({"filename": upload.filename, "error": str(error)})
-                return render_template(
-                    "upload.html", **_upload_context(request.form), batch_results=batch_results
-                )
-        elif len(uploads) == 1:
-            try:
-                submission = process_answer_sheet(uploads[0], current_app.config)
-                flash("Sheet processed and saved. Review the responses below.", "success")
-                return redirect(url_for("scanning.review_submission", submission_id=submission.id))
-            except DuplicateSubmissionError as error:
-                flash(str(error), "error")
-                return redirect(url_for("scanning.review_submission", submission_id=error.submission_id))
-            except (ImageProcessingError, ValueError, OSError) as error:
-                flash(str(error), "error")
-        else:
-            batch_results = []
-            for upload in uploads:
-                try:
-                    submission = process_answer_sheet(upload, current_app.config)
-                    batch_results.append({
-                        "filename": upload.filename,
-                        "url": url_for("scanning.review_submission", submission_id=submission.id),
-                        "action": "Review submission",
-                    })
-                except DuplicateSubmissionError as error:
-                    batch_results.append({
-                        "filename": upload.filename,
-                        "url": url_for("scanning.review_submission", submission_id=error.submission_id),
-                        "action": "Review existing submission (duplicate)",
-                    })
-                except (ImageProcessingError, ValueError, OSError) as error:
-                    batch_results.append({"filename": upload.filename, "error": str(error)})
-            return render_template("upload.html", **_upload_context(request.form), batch_results=batch_results)
+                        flash(str(error), "error")
+                else:
+                    batch_results = []
+                    for upload in uploads:
+                        try:
+                            draft = create_v3_scan_draft(
+                                upload, current_app.config, assessment, question_count, selected_student_id
+                            )
+                            batch_results.append({
+                                "filename": upload.filename,
+                                "url": url_for("scanning.review_v3_draft", draft_id=draft.id),
+                                "action": "Review detected sheet",
+                            })
+                        except (ImageProcessingError, ValueError, OSError) as error:
+                            batch_results.append({"filename": upload.filename, "error": str(error)})
+                    return render_template(
+                        "upload.html", **_upload_context(request.form), batch_results=batch_results
+                    )
     return render_template("upload.html", **_upload_context(request.form if request.method == "POST" else {}))
 
 @scanning_bp.route("/submissions/<int:submission_id>")
@@ -112,8 +84,22 @@ def review_submission(submission_id: int):
 def review_v3_draft(draft_id: int):
     draft = db.get_or_404(ScanDraft, draft_id)
     assessment = draft.assessment
-    students = db.session.scalars(select(Student).where(Student.class_section == assessment.class_section).order_by(Student.name)).all()
-    return render_template("v3_draft_review.html", draft=draft, students=students)
+    detected_student = None
+    if draft.detected_student_number and draft.student_id_detection.get("status") == "detected":
+        detected_student = db.session.scalar(
+            select(Student).where(Student.student_number == draft.detected_student_number)
+        )
+    selected_student_id = detected_student.id if detected_student else draft.student_id
+    extra_student_ids = [student_id for student_id in (selected_student_id, draft.student_id) if student_id]
+    student_filter = Student.class_section == assessment.class_section
+    if extra_student_ids:
+        student_filter = or_(student_filter, Student.id.in_(set(extra_student_ids)))
+    students = db.session.scalars(select(Student).where(student_filter).order_by(Student.name)).all()
+    return render_template(
+        "v3_draft_review.html", draft=draft, students=students,
+        detected_student=detected_student, selected_student_id=selected_student_id,
+        student_class_mismatch=bool(detected_student and detected_student.class_section != assessment.class_section),
+    )
 
 
 @scanning_bp.route("/v3-drafts/<int:draft_id>/images/<kind>")

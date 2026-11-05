@@ -341,11 +341,13 @@ def test_paparazzi_branding_and_answer_sheet_route(monkeypatch):
     answer_sheet_page = client.get("/answer-sheets")
     assert answer_sheet_page.status_code == 200
     assert b"Answer Sheets" in answer_sheet_page.data
-    assert b"Paparazzi Standard V3" in answer_sheet_page.data
+    assert b"PAPARAZZI STANDARD" in answer_sheet_page.data
+    assert b"V4 (recommended for new assessments)" in answer_sheet_page.data
     assert b"Answer_Sheet_20Q_V3.pdf" in answer_sheet_page.data
     assert b"Answer_Sheet_50Q_V3.pdf" in answer_sheet_page.data
     assert b"Answer_Sheet_100Q_V3.pdf" in answer_sheet_page.data
     assert b"Answer_Sheets_20_50_100_V3.pdf" in answer_sheet_page.data
+    assert b"Answer_Sheet_50Q_V4.pdf" in answer_sheet_page.data
     from pathlib import Path
     asset_dir = Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "v3" / "Paparazzi_Answer_Sheets_V3_Package"
     for filename in ("Answer_Sheet_20Q_V3.pdf", "Answer_Sheet_50Q_V3.pdf", "Answer_Sheet_100Q_V3.pdf", "Answer_Sheets_20_50_100_V3.pdf"):

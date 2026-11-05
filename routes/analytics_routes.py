@@ -1,6 +1,8 @@
 import json
+from io import BytesIO
+from werkzeug.utils import secure_filename
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
+from flask import Blueprint, abort, current_app, flash, redirect, render_template, request, send_file, url_for
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -20,6 +22,7 @@ from services.teaching_insights_service import (
     output_fingerprint,
     validate_generated_output,
 )
+from services.lesson_pdf_service import lesson_plan_pdf_bytes
 
 analytics_bp = Blueprint("analytics", __name__, url_prefix="/analytics")
 
@@ -112,11 +115,23 @@ def save_ai_output(insight_id: int):
         insight.output = validate_generated_output(insight.kind, output)
         insight.teacher_saved = True
         db.session.commit()
-        flash("Edited suggestion saved for this assessment.", "success")
+        flash("Suggestion submitted and saved. Its formatted output is shown below.", "success")
     except (json.JSONDecodeError, TeachingAIError) as error:
         db.session.rollback()
         flash(f"The suggestion was not saved: {error}", "error")
     return redirect(url_for("analytics.index", assessment_id=insight.assessment_id))
+
+
+@analytics_bp.route("/ai/<int:insight_id>/lesson.pdf")
+def download_lesson_pdf(insight_id: int):
+    insight = db.get_or_404(TeachingInsight, insight_id)
+    if insight.kind != "lesson":
+        abort(404)
+    title = insight.assessment.title if insight.assessment else "Lesson Review"
+    filename = secure_filename(title) or "lesson-review"
+    pdf = lesson_plan_pdf_bytes(title, insight.duration_minutes or 30, insight.output or {})
+    return send_file(BytesIO(pdf), mimetype="application/pdf", as_attachment=True,
+                     download_name=f"{filename}-lesson-review.pdf")
 
 
 @analytics_bp.route("/resources", methods=["POST"])

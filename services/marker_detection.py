@@ -1,4 +1,4 @@
-"""Fast live-frame validation for the registered Paparazzi Standard V3 page."""
+"""Fast live-frame validation for official Paparazzi answer sheets."""
 from __future__ import annotations
 
 import itertools
@@ -9,38 +9,57 @@ import numpy as np
 from services.paparazzi_v3_scanner import (
     _combination_score,
     _find_square_candidates,
+    _marker_confidence_from_geometry_score,
     _order_quad,
     _profile_mark_centers,
-    load_v3_profile,
+    load_official_profile,
 )
 
 
-def detect_v3_registration_markers(frame: np.ndarray, profile: dict | None = None, *, min_page_area_ratio: float = 0.25) -> dict:
+def detect_v3_registration_markers(
+    frame: np.ndarray,
+    profile: dict | None = None,
+    *,
+    min_page_area_ratio: float = 0.25,
+    min_confidence: float = 0.10,
+    muse_locator=None,
+) -> dict:
     """Find four markers and verify their spacing, expected size, and full-page framing.
 
     Candidate extraction uses adaptive/Otsu thresholding with CLAHE from the scanner's
-    existing geometry code. Only the best 20 square candidates are combined to keep
-    live-frame cost bounded.
+    existing geometry code, plus isolated solid-square recovery for blurred marks.
     """
-    profile = profile or load_v3_profile()
+    if not 0.0 <= min_confidence <= 1.0:
+        raise ValueError("Minimum marker confidence must be between 0 and 1.")
+    profile = profile or load_official_profile(20)
     if frame is None or not isinstance(frame, np.ndarray) or frame.ndim not in (2, 3) or frame.size == 0:
         return _empty_detection("invalid_frame")
     gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY if frame.shape[2] == 4 else cv2.COLOR_BGR2GRAY)
     height, width = gray.shape
     if width < 160 or height < 160:
         return _empty_detection("frame_too_small")
-    candidates = _find_square_candidates(gray)[:20]
-    if len(candidates) < 4:
+    candidates = [
+        candidate for candidate in _find_square_candidates(gray)
+        if candidate["side"] >= max(12.0, min(gray.shape) * 0.015)
+    ]
+    if len(candidates) < 4 and muse_locator is None:
         return _empty_detection("markers_not_found", detected_markers=len(candidates))
 
     combinations = []
     for group in itertools.combinations(candidates, 4):
         scored = _combination_score(group, profile, gray.shape)
         if scored is not None:
-            combinations.append((scored[0], _order_quad(np.asarray([item["center"] for item in group], dtype=np.float32))))
+            combinations.append((scored[0], _order_quad(np.asarray([item["center"] for item in group], dtype=np.float32)), "opencv"))
+    local_best_score = min((item[0] for item in combinations), default=None)
+    if muse_locator is not None and (local_best_score is None or _marker_confidence_from_geometry_score(local_best_score) < min_confidence):
+        muse_candidates = muse_locator.locate(gray)
+        if muse_candidates:
+            muse_score = _combination_score(tuple(muse_candidates), profile, gray.shape)
+            if muse_score is not None:
+                combinations.append((muse_score[0], _order_quad(np.asarray([item["center"] for item in muse_candidates], dtype=np.float32)), "muse_spark"))
     if not combinations:
         return _empty_detection("invalid_marker_geometry", detected_markers=len(candidates))
-    score, points = min(combinations, key=lambda result: result[0])
+    score, points, locator_source = min(combinations, key=lambda result: result[0])
     corner_names = ("top_left", "top_right", "bottom_right", "bottom_left")
     marker_coordinates = {name: [float(points[index][0]), float(points[index][1])] for index, name in enumerate(corner_names)}
     centers = _profile_mark_centers(profile)
@@ -71,7 +90,13 @@ def detect_v3_registration_markers(frame: np.ndarray, profile: dict | None = Non
     adaptive = cv2.adaptiveThreshold(normalized, 1, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 15, 5)
     signature = cv2.resize(adaptive, (96, 136), interpolation=cv2.INTER_NEAREST)
     page_signature = adaptive.ravel().tolist()
-    status = "valid" if sufficiently_visible else "page_not_fully_visible"
+    confidence = _marker_confidence_from_geometry_score(score)
+    if not sufficiently_visible:
+        status = "page_not_fully_visible"
+    elif confidence < min_confidence:
+        status = "marker_confidence_too_low"
+    else:
+        status = "valid"
     bottom_visible = all(marker_coordinates[name] for name in ("bottom_left", "bottom_right"))
     return {
         "markers_visible": len(marker_coordinates) == 4,
@@ -80,12 +105,13 @@ def detect_v3_registration_markers(frame: np.ndarray, profile: dict | None = Non
         "bottom_markers_visible": bottom_visible,
         "geometry_valid": True,
         "geometry_score": float(score),
-        "confidence": float(max(0.0, min(1.0, 1.0 - score / 0.75))),
+        "confidence": confidence,
+        "locator_source": locator_source,
         "sheet_sufficiently_visible": sufficiently_visible,
         "page_inside_frame": page_inside_frame,
         "page_frame_area_ratio": frame_area_ratio,
         "page_signature": page_signature,
-        "valid": sufficiently_visible,
+        "valid": status == "valid",
         "status": status,
     }
 
@@ -104,4 +130,5 @@ def _empty_detection(status: str, *, detected_markers: int = 0) -> dict:
         "page_frame_area_ratio": 0.0,
         "valid": False,
         "status": status,
+        "locator_source": None,
     }

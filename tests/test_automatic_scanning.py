@@ -1,5 +1,6 @@
 from pathlib import Path
 from io import BytesIO
+from datetime import datetime, timedelta, timezone
 
 import cv2
 import numpy as np
@@ -8,7 +9,7 @@ import pytest
 from sqlalchemy import select, text
 
 from extensions import db
-from models import Assessment, CameraIngestionState, CaptureJob, Question, ScannerControl, Student
+from models import Assessment, CameraIngestionState, CaptureJob, Question, ScannerControl, Student, Submission
 from services.capture_queue import (
     QueueFullError,
     claim_next_job,
@@ -341,11 +342,8 @@ def test_capture_job_runs_the_existing_v3_draft_and_grading_pipeline(app, tmp_pa
     job = queue_image_bytes(encoded.tobytes(), ".png", assessment.id, app.config, capture_id="6" * 32)
     claimed = claim_next_job()
     processed = process_job(claimed.id, app.config)
-    assert processed.status == "NEEDS_REVIEW"
-    draft = processed.draft
-    assert draft.detected_student_number == "1234567"
-    assert [item["answer"] for item in draft.recognized_answers] == answers
-    submission = confirm_v3_scan_draft(draft, student, answers)
+    assert processed.status == "COMPLETED"
+    submission = processed.submission
     db.session.refresh(job)
     assert submission.score == 20
     assert submission.percentage_score == 100
@@ -395,7 +393,7 @@ def test_camera_dashboard_and_manual_upload_routes_remain_available(client):
     assert b"python -m services.scan_worker" in page.data
 
 
-def test_start_pause_and_resume_controls_are_persisted(app):
+def test_start_pause_and_resume_controls_are_persisted(app, monkeypatch):
     app.config["ESP32_STREAM_URL"] = "http://camera.local:81/stream"
     app.config["ESP32_CAPTURE_URL"] = "http://camera.local/capture"
     assessment = Assessment(title="Auto scan controls", subject="Science", class_section="AUTO", total_questions=20)
@@ -406,6 +404,8 @@ def test_start_pause_and_resume_controls_are_persisted(app):
     db.session.add(assessment)
     db.session.commit()
     client = app.test_client()
+    monkeypatch.setattr("routes.automatic_scanning_routes.ESP32Camera.read_frame", lambda _camera: np.zeros((480, 640, 3), dtype=np.uint8))
+    monkeypatch.setattr("routes.automatic_scanning_routes.ESP32Camera.close_stream", lambda _camera: None)
     started = client.post("/scanning/automatic/start", data={"assessment_id": assessment.id})
     assert started.status_code == 302
     status = client.get("/scanning/automatic/status").get_json()
@@ -417,6 +417,39 @@ def test_start_pause_and_resume_controls_are_persisted(app):
     assert client.get("/scanning/automatic/status").get_json()["paused"] is False
     assert client.post("/scanning/automatic/stop").status_code == 302
     assert client.get("/scanning/automatic/status").get_json()["active"] is False
+
+
+def test_scan_session_waits_for_queue_drain_before_completed(app):
+    from routes.automatic_scanning_routes import _session_progress
+
+    with app.app_context():
+        now = datetime.now(timezone.utc)
+        assessment = Assessment(title="Session lifecycle", subject="Science", class_section="SESSION", total_questions=1)
+        assessment.questions = [Question(question_number=1, prompt="Q", option_a="A", option_b="B", option_c="C", option_d="D", option_e="E", correct_answer="A", points=1, learning_objective="Basics")]
+        student = Student(student_number="7654321", name="Session Student", class_section="SESSION")
+        submission = Submission(student=student, assessment=assessment, score=1, total_points=1,
+                                percentage_score=100, processing_status="processed", review_status="complete")
+        db.session.add_all([assessment, student, submission])
+        db.session.flush()
+        job = CaptureJob(capture_id="session-progress-1", assessment_id=assessment.id,
+                         image_filename="session.jpg", status="QUEUED")
+        control = ScannerControl(id=1, active=False, paused=False, assessment_id=assessment.id,
+                                 session_started_at=now - timedelta(minutes=1), session_ended_at=now,
+                                 session_camera_baseline={"camera_id": "session-camera", "rejected": 0, "duplicates": 0})
+        db.session.add_all([job, control])
+        db.session.commit()
+        waiting = _session_progress(control)
+        assert waiting["state"] == "PROCESSING_REMAINING_QUEUE"
+        assert waiting["valid_sheets_captured"] == 1
+        assert waiting["images_awaiting_processing"] == 1
+
+        job.status = "COMPLETED"
+        job.submission_id = submission.id
+        db.session.commit()
+        complete = _session_progress(control)
+        assert complete["state"] == "COMPLETED"
+        assert complete["successfully_graded"] == 1
+        assert complete["images_awaiting_processing"] == 0
 
 
 def _api_assessment():

@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block title %}Canvas grade preview{% endblock %}
+{% block content %}
+<section class="card"><a href="{{ url_for('canvas.assessment_setup', assessment_id=preview.assessment.id) }}">&larr; Canvas mapping</a><p class="eyebrow mt-3">NO GRADES HAVE BEEN SENT</p><h1>Review Canvas grade upload</h1>
+  <p><strong>{{ preview.assessment.title }}</strong> → {{ preview.mapping.course_name }} (course {{ preview.mapping.course_id }}) → {{ preview.mapping.assignment_name }} (assignment {{ preview.mapping.assignment_id }})</p>
+  <p>Conversion: Paparazzi points ÷ {{ preview.assessment.total_questions }}-question assessment points × {{ preview.points_possible }} Canvas points. Rounded to 0.01 with half-up rounding. Existing grades require a separate per-student overwrite checkbox.</p>
+  <p><a href="{{ url_for('canvas.roster', assessment_id=preview.assessment.id) }}">Resolve unmatched or ambiguous IDs</a> · <a href="{{ url_for('canvas.sync_history') }}">Sync history</a></p>
+  <form method="post" action="{{ url_for('canvas.submit_grades', assessment_id=preview.assessment.id) }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="table-responsive"><table class="table align-middle"><thead><tr><th>Include</th><th>Paparazzi ID</th><th>Canvas student</th><th>Match</th><th>Paparazzi score</th><th>Canvas grade</th><th>Existing grade</th><th>Status</th></tr></thead><tbody>
+    {% for row in preview.rows %}<tr><td>{% if row.match_status in ['matched by SIS ID','manual match verified'] and not row.same_success %}<input class="form-check-input" type="checkbox" name="include" value="{{ row.student_db_id }}" {% if row.previous_grade is none %}checked{% endif %} aria-label="Include grade for {{ row.student_number }}">{% else %}—{% endif %}</td>
+      <td><code>{{ row.student_number }}</code></td><td>{{ row.canvas_name }}{% if row.canvas_user_id %}<div class="small text-muted">Canvas ID {{ row.canvas_user_id }}</div>{% endif %}</td><td>{{ row.match_status }}</td><td>{{ row.paparazzi_score }}/{{ row.paparazzi_total }}</td><td>{{ row.canvas_grade }}/{{ row.points_possible }}</td>
+      <td>{% if row.previous_grade is not none %}<label class="form-check"><input class="form-check-input" type="checkbox" name="overwrite" value="{{ row.student_db_id }}"><span class="form-check-label">{{ row.previous_grade }} · confirm overwrite</span></label>{% else %}No current grade{% endif %}</td><td>{{ row.status }}</td></tr>
+    {% else %}<tr><td colspan="8" class="text-muted">No finalized Paparazzi submissions are ready to export.</td></tr>{% endfor %}
+    </tbody></table></div>
+    {% if preview.rows %}<label class="form-check mb-3"><input class="form-check-input" type="checkbox" name="confirm_upload" value="yes" required><span class="form-check-label">I reviewed this course, assignment, student matching, and grade conversion. Send only included rows to Canvas.</span></label><button class="btn btn-primary">Confirm and submit selected grades</button>{% endif %}
+  </form>
+</section>
+<section class="card"><h2>Recent sync results</h2><div class="table-responsive"><table class="table"><thead><tr><th>Time</th><th>Paparazzi ID</th><th>Canvas user</th><th>Grade</th><th>Previous</th><th>Status</th><th></th></tr></thead><tbody>
+  {% for item in history %}<tr><td>{{ item.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ item.student_number }}</td><td>{{ item.canvas_user_id or '—' }}</td><td>{{ item.posted_grade if item.posted_grade is not none else '—' }}</td><td>{{ item.previous_grade if item.previous_grade is not none else '—' }}</td><td>{{ item.status|title }}{% if item.error_detail %}<div class="small text-danger">{{ item.error_detail }}</div>{% endif %}</td><td>{% if item.status == 'failed' %}<form method="post" action="{{ url_for('canvas.retry_sync', sync_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-warning">Retry safely</button></form>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="7" class="text-muted">No sync attempts for this assessment.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

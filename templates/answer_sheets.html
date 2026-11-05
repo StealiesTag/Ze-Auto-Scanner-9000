@@ -1,30 +1,17 @@
 {% extends 'base.html' %}
-{% block title %}Paparazzi Standard V3 Sheets{% endblock %}
+{% block title %}Official Paparazzi Answer Sheets{% endblock %}
 {% block content %}
 <section class="card">
-  <p class="eyebrow">PAPARAZZI STANDARD V3</p>
+  <p class="eyebrow">OFFICIAL PAPARAZZI SHEETS</p>
   <h1>Answer Sheets</h1>
-  <p class="text-muted">Download the original vector templates. Paparazzi serves these files unchanged; their geometry is used by the V3 scanner.</p>
+  <p class="text-muted">Use the official sheet that matches the number of questions in your assessment. Both sheets include a machine-readable seven-digit student ID.</p>
   <div class="row g-3 mt-2">
-    {% for count, questions_per_column in [(20, 10), (50, 25), (100, 25)] %}
-    <div class="col-md-4">
-      <article class="border rounded p-3 h-100 d-flex flex-column">
-        <h2>{{ count }} Questions</h2>
-        <dl class="small mb-3">
-          <dt>Paper</dt><dd>A4 portrait</dd>
-          <dt>Answer choices</dt><dd>A–E</dd>
-          <dt>Layout</dt><dd>{{ 4 if count == 100 else 2 }} columns, {{ questions_per_column }} rows each</dd>
-          <dt>Student ID</dt><dd>Seven digits, bubble-coded</dd>
-        </dl>
-        <a class="btn btn-primary mt-auto" href="{{ url_for('static', filename='answer_sheets/v3/Paparazzi_Answer_Sheets_V3_Package/Answer_Sheet_' ~ count ~ 'Q_V3.pdf') }}" download>Download {{ count }}Q PDF</a>
-      </article>
-    </div>
-    {% endfor %}
+    <div class="col-md-6"><article class="border rounded p-3 h-100 d-flex flex-column"><h2>20 Questions</h2><p class="small">A4 portrait · seven-digit student ID · registration marks</p><a class="btn btn-primary mt-auto" href="{{ url_for('static', filename='answer_sheets/official/Answer_Sheet_20Q_Official.pdf') }}" download>Download official 20-question sheet</a></article></div>
+    <div class="col-md-6"><article class="border rounded p-3 h-100 d-flex flex-column"><h2>50 Questions</h2><p class="small">A4 portrait · seven-digit student ID · registration marks</p><a class="btn btn-primary mt-auto" href="{{ url_for('static', filename='answer_sheets/official/Answer_Sheet_50Q_Official.pdf') }}" download>Download official 50-question sheet</a></article></div>
   </div>
-  <div class="mt-3"><a class="btn btn-outline-primary" href="{{ url_for('static', filename='answer_sheets/v3/Paparazzi_Answer_Sheets_V3_Package/Answer_Sheets_20_50_100_V3.pdf') }}" download>Download combined 20 / 50 / 100 PDF</a></div>
 </section>
 <section class="card">
   <h2>Printing</h2>
-  <p class="mb-0">Use A4 paper in portrait orientation at 100% / Actual Size. Disable Fit to Page. Do not resize or crop; V3 scanning depends on the original page geometry.</p>
+  <p class="mb-0">Print A4 portrait at 100% / Actual Size. Disable Fit to Page. Do not resize or crop the sheet.</p>
 </section>
 {% endblock %}

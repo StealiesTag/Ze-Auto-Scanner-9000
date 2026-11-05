@@ -11,8 +11,17 @@ class Assessment(db.Model):
     subject = db.Column(db.String(100), nullable=False)
     class_section = db.Column(db.String(100), nullable=False)
     total_questions = db.Column(db.Integer, nullable=False)
+    answer_sheet_version = db.Column(db.String(2), nullable=False, default="V4")
+    source_pdf_filename = db.Column(db.String(255), nullable=True)
+    source_pdf_path = db.Column(db.String(500), nullable=True)
+    source_pdf_text = db.Column(db.Text, nullable=True)
+    source_pdf_sha256 = db.Column(db.String(64), nullable=True)
+    source_pdf_page_count = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), server_default=func.now(), nullable=False)
-    __table_args__ = (CheckConstraint("total_questions > 0", name="ck_assessment_questions_positive"),)
+    __table_args__ = (
+        CheckConstraint("total_questions > 0", name="ck_assessment_questions_positive"),
+        CheckConstraint("answer_sheet_version = 'V4'", name="ck_assessment_sheet_version"),
+    )
 
     questions = db.relationship(
         "Question",
@@ -48,6 +57,9 @@ class Question(db.Model):
     correct_answer = db.Column(db.String(1), nullable=False)
     points = db.Column(db.Numeric(8, 2), nullable=False, default=1.0)
     learning_objective = db.Column(db.String(255), nullable=False)
+    source_pdf_page = db.Column(db.Integer, nullable=True)
+    source_pdf_excerpt = db.Column(db.Text, nullable=True)
+    source_pdf_mapping_reviewed = db.Column(db.Boolean, nullable=False, default=False)
 
     assessment = db.relationship("Assessment", back_populates="questions")
     responses = db.relationship("Response", back_populates="question", cascade="all, delete-orphan")
@@ -55,6 +67,7 @@ class Question(db.Model):
     __table_args__ = (
         UniqueConstraint("assessment_id", "question_number", name="uq_assessment_question_number"),
         CheckConstraint("question_number > 0", name="ck_question_number_positive"),
+        CheckConstraint("source_pdf_page IS NULL OR source_pdf_page > 0", name="ck_question_source_pdf_page_positive"),
         CheckConstraint("correct_answer IN ('A', 'B', 'C', 'D', 'E')", name="ck_question_answer_valid"),
         CheckConstraint("points > 0", name="ck_question_points_positive"),
     )
