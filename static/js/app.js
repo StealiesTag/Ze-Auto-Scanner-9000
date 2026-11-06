@@ -112,9 +112,15 @@ document.addEventListener('DOMContentLoaded', () => {
         reject(new Error('The browser did not start the print job. Check the printer and silent-print setup, then resume scanning.'));
       }, 30000);
       const onMessage = (event) => {
-        if (event.origin !== window.location.origin || event.data?.type !== 'paparazzi-print-started' || event.data.step !== step) return;
+        if (event.origin !== window.location.origin || event.data?.step !== step
+          || !['paparazzi-print-started', 'paparazzi-print-error'].includes(event.data?.type)) return;
         window.clearTimeout(timeout);
         window.removeEventListener('message', onMessage);
+        if (event.data?.type === 'paparazzi-print-error') {
+          reject(new Error(event.data.error || 'The printer start could not be recorded.'));
+          return;
+        }
+        if (event.data?.type !== 'paparazzi-print-started') return;
         resolve();
       };
       window.addEventListener('message', onMessage);
@@ -146,21 +152,40 @@ document.addEventListener('DOMContentLoaded', () => {
           const step = retryCurrentPage
             ? Number(status.marker_status.retry_step ?? status.printer_step)
             : Number(status.printer_step || 0) + 1;
+          const captureDelayMs = step === 1 ? 16000 : 12000;
           if (retryCurrentPage) {
             setText('capture-state', 'RECAPTURING LAST SHEET FOR MUSE ALIGNMENT');
+            const printStartedAt = Date.parse(status.marker_status?.print_started_at || '');
+            if (!Number.isFinite(printStartedAt)) {
+              throw new Error('The printer start time is missing. Stop and restart scanning before capturing this page.');
+            }
+            const remainingDelay = captureDelayMs - (Date.now() - printStartedAt);
+            if (remainingDelay > 0) {
+              setText('capture-state', `WAITING ${Math.ceil(remainingDelay / 1000)}s FOR THE PRINTER STEP`);
+              await new Promise((resolve) => window.setTimeout(resolve, remainingDelay));
+            }
           } else {
             await waitForPrintInitiation(step);
-            setText('capture-state', 'WAITING 6s AFTER PRINT START');
-            await new Promise((resolve) => window.setTimeout(resolve, 6000));
+            setText('capture-state', `WAITING ${captureDelayMs / 1000}s AFTER PRINT START`);
+            await new Promise((resolve) => window.setTimeout(resolve, captureDelayMs));
           }
           const csrf = document.querySelector('input[name="csrf_token"]')?.value || '';
           const body = new URLSearchParams({ step: String(step), csrf_token: csrf });
-          const response = await fetch(captureStepUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-            body,
-          });
-          const result = await response.json();
+          let response;
+          let result;
+          do {
+            response = await fetch(captureStepUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+              body,
+            });
+            result = await response.json();
+            if (response.status === 425 && Number(result.retry_after_ms) > 0) {
+              const retryDelay = Math.min(Number(result.retry_after_ms), 1000);
+              setText('capture-state', `WAITING ${Math.ceil(retryDelay / 1000)}s FOR THE PRINTER TIMER`);
+              await new Promise((resolve) => window.setTimeout(resolve, retryDelay));
+            }
+          } while (response.status === 425 && Number(result.retry_after_ms) > 0);
           if (!response.ok || !result.ok) {
             setText('camera-error', result.error || 'The capture step failed. Scanning has paused.');
             break;
@@ -250,6 +275,29 @@ document.addEventListener('DOMContentLoaded', () => {
           form.append(button);
           action.append(form);
         } else if (job.error) action.textContent = job.error;
+        if (job.delete_url) {
+          const form = document.createElement('form');
+          form.method = 'post';
+          form.action = job.delete_url;
+          form.addEventListener('submit', (event) => {
+            const confirmed = window.confirm('Delete this recent capture? Any unsubmitted review draft and its images will be permanently removed. Submitted grades and evidence will be kept.');
+            if (!confirmed) event.preventDefault();
+          });
+          const csrf = document.querySelector('input[name="csrf_token"]');
+          if (csrf) {
+            const token = document.createElement('input');
+            token.type = 'hidden';
+            token.name = 'csrf_token';
+            token.value = csrf.value;
+            form.append(token);
+          }
+          const button = document.createElement('button');
+          button.type = 'submit';
+          button.className = 'btn btn-sm btn-outline-danger mt-1';
+          button.textContent = 'Delete';
+          form.append(button);
+          action.append(form);
+        }
         row.append(action);
         body.append(row);
       });

@@ -3,25 +3,33 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#1e332d">
     <title>{% block title %}Paparazzi{% endblock %}</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=studio-2026-11-07-1">
   </head>
   <body>
-    <nav class="topbar">
-      <a class="brand" href="{{ url_for('dashboard.index') }}">Paparazzi</a>
-      <div class="nav-links">
-        <a href="{{ url_for('dashboard.index') }}">Dashboard</a>
-        <a href="{{ url_for('student.list_students') }}">Students</a>
-        <a href="{{ url_for('assessment.list_assessments') }}">Assessments</a>
-        <a href="{{ url_for('answer_sheet.answer_sheets') }}">Answer Sheets</a>
-        <a href="{{ url_for('scanning.upload_page') }}">Scan sheets</a>
-        <a href="{{ url_for('automatic_scanning.dashboard') }}">Automatic scan</a>
-        <a href="{{ url_for('analytics.index') }}">Analytics</a>
-        <a href="{{ url_for('canvas.settings') }}">Canvas</a>
+    {% set current = request.endpoint or '' %}
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="{{ url_for('dashboard.index') }}" aria-label="Paparazzi home">
+          <img class="brand-logo" src="{{ url_for('static', filename='images/paparazzi-logo.png') }}" alt="" aria-hidden="true">
+          <span class="brand-copy"><strong>Paparazzi</strong><small>ASSESSMENT STUDIO</small></span>
+        </a>
+        <nav class="nav-links" aria-label="Main navigation">
+          <a class="{{ 'is-active' if current == 'dashboard.index' else '' }}" {% if current == 'dashboard.index' %}aria-current="page"{% endif %} href="{{ url_for('dashboard.index') }}">Home</a>
+          <a class="{{ 'is-active' if current.startswith('student.') else '' }}" {% if current.startswith('student.') %}aria-current="page"{% endif %} href="{{ url_for('student.list_students') }}">Students</a>
+          <a class="{{ 'is-active' if current.startswith('assessment.') else '' }}" {% if current.startswith('assessment.') %}aria-current="page"{% endif %} href="{{ url_for('assessment.list_assessments') }}">Assessments</a>
+          <a class="{{ 'is-active' if current.startswith('answer_sheet.') else '' }}" {% if current.startswith('answer_sheet.') %}aria-current="page"{% endif %} href="{{ url_for('answer_sheet.answer_sheets') }}">Sheets</a>
+          <a class="{{ 'is-active' if current.startswith('scanning.') else '' }}" {% if current.startswith('scanning.') %}aria-current="page"{% endif %} href="{{ url_for('scanning.upload_page') }}">Review scans</a>
+          <a class="{{ 'is-active' if current.startswith('automatic_scanning.') else '' }}" {% if current.startswith('automatic_scanning.') %}aria-current="page"{% endif %} href="{{ url_for('automatic_scanning.dashboard') }}">Auto scan</a>
+          <a class="{{ 'is-active' if current.startswith('analytics.') else '' }}" {% if current.startswith('analytics.') %}aria-current="page"{% endif %} href="{{ url_for('analytics.index') }}">Analytics</a>
+          <a class="{{ 'is-active' if current.startswith('canvas.') else '' }}" {% if current.startswith('canvas.') %}aria-current="page"{% endif %} href="{{ url_for('canvas.settings') }}">Canvas</a>
+        </nav>
       </div>
-    </nav>
-    <main class="page">
+    </header>
+    <main class="page" id="main-content">
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% for category, message in messages %}
           <div class="alert alert-{{ 'danger' if category == 'error' else category }}" role="alert">{{ message }}</div>
@@ -30,6 +38,6 @@
       {% block content %}{% endblock %}
     </main>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', filename='js/app.js') }}?v=scan-muse-queue-1"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=scan-timer-16-12-2"></script>
   </body>
 </html>

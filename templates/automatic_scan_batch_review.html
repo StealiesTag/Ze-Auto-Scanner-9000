@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+{% block title %}Review automatic captures{% endblock %}
+{% block content %}
+<section class="card">
+  <p class="eyebrow">AUTOMATIC SCANNING · BATCH REVIEW</p>
+  <h1>Review and save captures</h1>
+  <p class="text-muted mb-2">{% if all_assessments %}All assessments{% else %}{{ assessment.title }}{% endif %} · {{ review_rows|length }} capture(s) waiting for review</p>
+  <p>Choose the correct student and verify every answer for every capture below. One save records every reviewed capture in Analytics. Canvas uploads still require a separate confirmation.</p>
+</section>
+
+<form method="post" action="{% if all_assessments %}{{ url_for('automatic_scanning.batch_review_all_save') }}{% else %}{{ url_for('automatic_scanning.batch_review_save', assessment_id=assessment.id) }}{% endif %}" class="vstack gap-3">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {% for row in review_rows %}
+  {% set draft = row.draft %}
+  <section class="card">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+      <div>
+        <h2 class="mb-1">Capture {{ draft.id }}</h2>
+        <div class="text-muted">Detected student ID: {{ draft.detected_student_number or 'Not confidently read' }} ({{ draft.student_id_detection.get('status', 'unknown')|replace('_', ' ') }})</div>
+      </div>
+    </div>
+    {% if draft.processing_notes.get('warnings') %}<div class="alert alert-warning">{{ draft.processing_notes.get('warnings')|join(' ') }}</div>{% endif %}
+    {% if row.detected_student %}<div class="alert alert-info py-2">ID matched {{ row.detected_student.name }} · {{ row.detected_student.student_number }} · {{ row.detected_student.class_section }}. Verify the match.</div>
+    {% elif draft.detected_student_number %}<div class="alert alert-warning py-2">No registered student matches this ID exactly. Select the correct student.</div>
+    {% else %}<div class="alert alert-warning py-2">The student ID could not be read reliably. Select the correct student.</div>{% endif %}
+
+    <div class="row g-3 mb-3">
+      {% for kind, label in [('original','Original'),('aligned','Aligned'),('debug','Bubble diagnostics')] %}
+      <div class="col-sm-4"><a href="{{ url_for('scanning.v3_draft_image', draft_id=draft.id, kind=kind) }}" target="_blank" rel="noopener">{{ label }} image</a></div>
+      {% endfor %}
+    </div>
+
+    <label class="form-label" for="student-{{ draft.id }}">Student</label>
+    <select class="form-select mb-3" id="student-{{ draft.id }}" name="draft_{{ draft.id }}_student_id" required>
+      <option value="">Select the correct student</option>
+      {% for student in row.students %}
+      <option value="{{ student.id }}" {% if row.selected_student_id == student.id %}selected{% endif %}>{{ student.name }} · {{ student.student_number }} · {{ student.class_section }}</option>
+      {% endfor %}
+    </select>
+
+    <div class="table-responsive"><table class="table table-sm align-middle">
+      <thead><tr><th>Question</th><th>Detected answer</th><th>Final answer</th></tr></thead>
+      <tbody>
+        {% for item in draft.recognized_answers %}
+        <tr>
+          <td>Q{{ item.question_number }}</td>
+          <td>{{ item.answer or '—' }} <span class="badge {{ 'text-bg-success' if item.status == 'detected' else 'text-bg-warning' }}">{{ item.status|replace('_', ' ') }}</span>
+            {% if item.status in ['multiple_marks','ambiguous'] %}<div class="small text-muted">{% for option, value in item.get('values', {}).items() %}{{ option }} {{ '%.2f'|format(value) }}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+          </td>
+          <td><select class="form-select" name="draft_{{ draft.id }}_answer_{{ item.question_number }}" aria-label="Final answer for capture {{ draft.id }}, question {{ item.question_number }}" required>
+            <option value="" disabled {% if item.status not in ['detected','blank'] %}selected{% endif %}>Review and select</option>
+            <option value="__blank__" {% if item.status == 'blank' %}selected{% endif %}>Blank / no mark</option>
+            {% for option in ['A','B','C','D','E'] %}<option value="{{ option }}" {% if item.status == 'detected' and item.answer == option %}selected{% endif %}>{{ option }}</option>{% endfor %}
+          </select></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  {% endfor %}
+
+  <section class="card">
+    <label class="form-check mb-3"><input class="form-check-input" type="checkbox" name="confirm_batch" value="yes" required><span class="form-check-label">I reviewed the student and every answer for all captures shown above.</span></label>
+    {% if canvas_ready and not all_assessments %}
+    <label class="form-check mb-3"><input class="form-check-input" type="checkbox" name="open_canvas_preview" value="yes"><span class="form-check-label">After saving, open the Canvas grade preview for this assessment.</span></label>
+    {% elif not all_assessments %}
+    <p class="small text-muted">To send grades to Canvas, first connect Canvas and map this assessment to an assignment in <a href="{{ url_for('canvas.assessment_setup', assessment_id=assessment.id) }}">Canvas setup</a>.</p>
+    {% endif %}
+    <div class="d-flex flex-wrap gap-2">
+      <button class="btn btn-primary">Save all captures to Analytics</button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('automatic_scanning.dashboard', assessment_id=assessment.id if assessment else none) }}">Cancel</a>
+    </div>
+  </section>
+</form>
+<section class="card border-danger">
+  <h2>Delete the capture queue</h2>
+  <p class="small text-muted">Remove all queued and finished captures, including unsubmitted review drafts. Submitted grades are kept. Captures already processing are skipped.</p>
+  <form method="post" action="{{ url_for('automatic_scanning.clear_queue') }}" onsubmit="return confirm('Delete all queued and finished captures and unsubmitted review drafts? Submitted grades will be kept; captures already processing will be skipped.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn btn-outline-danger">Delete all queued captures</button>
+  </form>
+</section>
+{% endblock %}

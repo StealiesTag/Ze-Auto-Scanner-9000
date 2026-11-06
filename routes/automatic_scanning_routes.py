@@ -2,13 +2,18 @@ from hmac import compare_digest
 from datetime import datetime, timezone
 
 from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, url_for
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from extensions import db
-from models import Assessment, CameraIngestionState, CaptureJob, ScannerControl
+from models import (
+    Assessment, CameraIngestionState, CanvasAssessmentMapping, CanvasConnection,
+    CaptureJob, ScanDraft, ScannerControl, Student,
+)
 from services.capture_queue import (
     QueueFullError,
+    clear_capture_queue,
+    delete_capture_job,
     ensure_queue_capacity,
     get_queue_counts,
     get_scanner_control,
@@ -20,7 +25,15 @@ from services.esp32_camera import CameraError, ESP32Camera
 from services.camera_setup import get_camera_setup, save_camera_setup
 from services.camera_poller import camera_poller_worker_running
 from services.marker_detection import detect_v3_registration_markers
-from services.paparazzi_v3_scanner import load_official_profile
+from services.paparazzi_v3_scanner import (
+    _bubble_fill_score,
+    _profile_mark_centers,
+    get_answer_bubble_centers_mm,
+    get_student_id_bubble_centers_mm,
+    load_official_profile,
+    preprocess_v3_image,
+)
+from services.paparazzi_v3_submission_service import confirm_v3_scan_draft
 
 
 automatic_scanning_bp = Blueprint("automatic_scanning", __name__, url_prefix="/scanning/automatic")
@@ -40,6 +53,108 @@ def _print_step_signature(frame) -> list[int]:
     return signature.ravel().tolist()
 
 
+def _response_signature(frame, detection: dict, profile: dict, question_count: int) -> list[str] | None:
+    """Build a lighting-tolerant signature from the student's actual marks."""
+    import cv2
+    import numpy as np
+
+    coordinates = detection.get("marker_coordinates") or {}
+    names = ("top_left", "top_right", "bottom_right", "bottom_left")
+    if not detection.get("geometry_valid") or any(name not in coordinates for name in names):
+        return None
+    try:
+        mark_centers = _profile_mark_centers(profile)
+        source = np.asarray([coordinates[name] for name in names], dtype=np.float32)
+        paper = profile["paper"]
+        scale = 3.0
+        target = np.asarray([
+            (mark_centers[name.replace("_", "")][0] * scale,
+             mark_centers[name.replace("_", "")][1] * scale)
+            for name in names
+        ], dtype=np.float32)
+        transform = cv2.getPerspectiveTransform(source, target)
+        aligned = cv2.warpPerspective(
+            frame, transform,
+            (round(paper["width_mm"] * scale), round(paper["height_mm"] * scale)),
+            borderValue=(255, 255, 255),
+        )
+        gray = preprocess_v3_image(aligned)
+
+        def selected_mark(centers, radius, pitch_x, pitch_y=None):
+            values = [
+                _bubble_fill_score(gray, center, radius, min(pitch_x, pitch_y or pitch_x))
+                for center in centers
+            ]
+            marked = [index for index, value in enumerate(values) if value >= 0.24]
+            return ",".join(map(str, marked)) if marked else "-"
+
+        result = []
+        student_id = profile["student_id"]
+        if student_id.get("auto_detect_enabled", True):
+            for centers in get_student_id_bubble_centers_mm(profile):
+                result.append(selected_mark(
+                    centers, student_id["bubble_radius_mm"],
+                    student_id["column_pitch_mm"], student_id["row_pitch_mm"],
+                ))
+        answers = profile["answers"]
+        for centers in get_answer_bubble_centers_mm(question_count, profile).values():
+            result.append(selected_mark(
+                centers, answers["bubble_radius_mm"],
+                answers["choice_pitch_mm"], answers["row_pitch_mm"],
+            ))
+        return result
+    except (KeyError, TypeError, ValueError, cv2.error):
+        return None
+
+
+def _student_number_from_response(frame, detection: dict, profile: dict) -> str | None:
+    """Read an ID only when every digit column has exactly one clear mark."""
+    import cv2
+    import numpy as np
+
+    section = profile.get("student_id", {})
+    coordinates = detection.get("marker_coordinates") or {}
+    names = ("top_left", "top_right", "bottom_right", "bottom_left")
+    if (not section.get("auto_detect_enabled", True)
+            or not detection.get("geometry_valid")
+            or any(name not in coordinates for name in names)):
+        return None
+    try:
+        mark_centers = _profile_mark_centers(profile)
+        source = np.asarray([coordinates[name] for name in names], dtype=np.float32)
+        paper = profile["paper"]
+        scale = 3.0
+        target = np.asarray([
+            (mark_centers[name.replace("_", "")][0] * scale,
+             mark_centers[name.replace("_", "")][1] * scale)
+            for name in names
+        ], dtype=np.float32)
+        aligned = cv2.warpPerspective(
+            frame, cv2.getPerspectiveTransform(source, target),
+            (round(paper["width_mm"] * scale), round(paper["height_mm"] * scale)),
+            borderValue=(255, 255, 255),
+        )
+        gray = preprocess_v3_image(aligned)
+        digits = section["digit_values"]
+        selected_digits = []
+        for centers in get_student_id_bubble_centers_mm(profile):
+            values = [
+                _bubble_fill_score(
+                    gray, center, section["bubble_radius_mm"],
+                    min(section["column_pitch_mm"], section["row_pitch_mm"]),
+                )
+                for center in centers
+            ]
+            marked = [index for index, value in enumerate(values) if value >= 0.24]
+            if len(marked) != 1:
+                return None
+            selected_digits.append(str(digits[marked[0]]))
+        student_number = "".join(selected_digits)
+        return student_number if student_number.isdigit() else None
+    except (KeyError, TypeError, ValueError, cv2.error):
+        return None
+
+
 def _assessment_ready(assessment_id: int) -> Assessment | None:
     assessment = db.session.get(Assessment, assessment_id)
     if (assessment is None or assessment.total_questions not in {20, 50}
@@ -51,6 +166,50 @@ def _assessment_ready(assessment_id: int) -> Assessment | None:
             or any(question.correct_answer not in {"A", "B", "C", "D", "E"} for question in questions)):
         return None
     return assessment
+
+
+def _automatic_drafts(assessment_id: int) -> list[ScanDraft]:
+    return db.session.scalars(
+        select(ScanDraft)
+        .join(CaptureJob, CaptureJob.draft_id == ScanDraft.id)
+        .where(
+            CaptureJob.assessment_id == assessment_id,
+            CaptureJob.source == "esp32",
+            CaptureJob.status == "NEEDS_REVIEW",
+        )
+        .order_by(CaptureJob.captured_at, CaptureJob.id)
+    ).all()
+
+
+def _all_automatic_drafts() -> list[ScanDraft]:
+    return db.session.scalars(
+        select(ScanDraft)
+        .join(CaptureJob, CaptureJob.draft_id == ScanDraft.id)
+        .where(CaptureJob.source == "esp32", CaptureJob.status == "NEEDS_REVIEW")
+        .order_by(CaptureJob.captured_at, CaptureJob.id)
+    ).all()
+
+
+def _batch_review_rows(drafts: list[ScanDraft]) -> list[dict]:
+    rows = []
+    for draft in drafts:
+        detected_student = None
+        if draft.detected_student_number and draft.student_id_detection.get("status") == "detected":
+            detected_student = db.session.scalar(
+                select(Student).where(Student.student_number == draft.detected_student_number)
+            )
+        extra_ids = {value for value in (draft.student_id, detected_student.id if detected_student else None) if value}
+        student_filter = Student.class_section == draft.assessment.class_section
+        if extra_ids:
+            student_filter = or_(student_filter, Student.id.in_(extra_ids))
+        students = db.session.scalars(select(Student).where(student_filter).order_by(Student.name)).all()
+        rows.append({
+            "draft": draft,
+            "students": students,
+            "detected_student": detected_student,
+            "selected_student_id": detected_student.id if detected_student else draft.student_id,
+        })
+    return rows
 
 
 def _camera_id() -> str:
@@ -75,6 +234,8 @@ def _job_payload(job: CaptureJob) -> dict:
         "image_url": url_for("camera_api.capture_image", capture_id=job.capture_id),
         "review_url": url_for("scanning.review_v3_draft", draft_id=draft.id) if draft else None,
         "retry_url": url_for("automatic_scanning.retry_capture", job_id=job.id) if job.status == "FAILED" else None,
+        "delete_url": url_for("automatic_scanning.delete_capture", job_id=job.id)
+        if job.status not in {"QUEUED", "PROCESSING"} else None,
     }
 
 
@@ -90,9 +251,27 @@ def dashboard():
         poller = db.session.get(CameraIngestionState, camera_setup["camera_id"])
         jobs = recent_capture_jobs()
         counts = get_queue_counts()
+        current_assessment_id = selected_assessment or control.assessment_id
+        pending_batch_count = 0
+        if current_assessment_id:
+            pending_batch_count = db.session.scalar(
+                select(func.count(ScanDraft.id))
+                .join(CaptureJob, CaptureJob.draft_id == ScanDraft.id)
+                .where(
+                    CaptureJob.assessment_id == current_assessment_id,
+                    CaptureJob.source == "esp32",
+                    CaptureJob.status == "NEEDS_REVIEW",
+                )
+            ) or 0
+        all_pending_batch_count = db.session.scalar(
+            select(func.count(ScanDraft.id))
+            .join(CaptureJob, CaptureJob.draft_id == ScanDraft.id)
+            .where(CaptureJob.source == "esp32", CaptureJob.status == "NEEDS_REVIEW")
+        ) or 0
         return render_template(
             "automatic_scanning.html", control=control, jobs=jobs, counts=counts, assessments=assessments,
-            selected_assessment=selected_assessment or control.assessment_id,
+            selected_assessment=current_assessment_id, pending_batch_count=pending_batch_count,
+            all_pending_batch_count=all_pending_batch_count,
             session_progress=_session_progress(control),
             stream_url=camera_setup["stream_url"], migration_pending=False,
             camera_setup=camera_setup,
@@ -106,6 +285,7 @@ def dashboard():
         return render_template(
             "automatic_scanning.html", control=None, jobs=[], counts={}, assessments=assessments,
             selected_assessment=selected_assessment, stream_url=current_app.config.get("ESP32_STREAM_URL", ""),
+            all_pending_batch_count=0,
             migration_pending=True, poller=None, camera_url=current_app.config.get("PAPARAZZI_CAMERA_URL", ""),
             camera_id=current_app.config["PAPARAZZI_CAMERA_ID"],
             camera_control_configured=bool(current_app.config.get("CAMERA_CONTROL_TOKEN")),
@@ -148,9 +328,30 @@ def update_camera_setup():
 
 @automatic_scanning_bp.route("/print-step")
 def print_step():
-    if not request.args.get("step", type=int):
+    if not request.args.get("step", type=int) or request.args.get("step", type=int) < 1:
         abort(400)
     return render_template("blank_feed_print.html", page_count=1, step=request.args.get("step", type=int))
+
+
+@automatic_scanning_bp.route("/print-step/started", methods=["POST"])
+def print_step_started():
+    control = get_scanner_control()
+    step = request.form.get("step", type=int)
+    marker_state = dict(control.marker_status or {})
+    expected_step = int(marker_state.get("printer_step", 0)) + 1
+    if not control.active or control.paused:
+        return jsonify({"ok": False, "error": "Scanning is not active."}), 409
+    if step != expected_step:
+        return jsonify({"ok": False, "error": "This printer step is stale or already started."}), 409
+    if marker_state.get("print_started_step") == step and marker_state.get("print_started_at"):
+        return jsonify({"ok": True, "print_started_at": marker_state["print_started_at"]})
+    started_at = datetime.now(timezone.utc).isoformat()
+    marker_state["print_started_step"] = step
+    marker_state["print_started_at"] = started_at
+    control.marker_status = marker_state
+    control.state = "WAITING_AFTER_PRINT_START"
+    db.session.commit()
+    return jsonify({"ok": True, "print_started_at": started_at})
 
 
 @automatic_scanning_bp.route("/capture-step", methods=["POST"])
@@ -168,6 +369,21 @@ def capture_step():
         return jsonify({"ok": False, "error": "Scanning is not active."}), 409
     if step != expected_step and not retry_current_page:
         return jsonify({"ok": False, "error": "This printer step is stale or already captured."}), 409
+    print_started_at = marker_state.get("print_started_at")
+    if not print_started_at or marker_state.get("print_started_step") != step:
+        return jsonify({"ok": False, "error": "No print start was recorded for this step. Stop and restart scanning before capturing."}), 409
+    try:
+        started_time = datetime.fromisoformat(str(print_started_at))
+        if started_time.tzinfo is None:
+            started_time = started_time.replace(tzinfo=timezone.utc)
+        required_delay = 16.0 if step == 1 else 12.0
+        elapsed = (datetime.now(timezone.utc) - started_time.astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "The print start time is invalid. Stop and restart scanning before capturing."}), 409
+    if elapsed < required_delay:
+        retry_after_ms = max(1, int((required_delay - elapsed) * 1000))
+        return jsonify({"ok": False, "too_early": True, "retry_after_ms": retry_after_ms,
+                        "error": "The printer wait time has not elapsed yet."}), 425
     assessment = _assessment_ready(control.assessment_id or 0)
     if assessment is None:
         control.paused = True
@@ -182,20 +398,54 @@ def capture_step():
         import cv2
         import numpy as np
         frame = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+        profile = load_official_profile(assessment.total_questions)
         detection = detect_v3_registration_markers(
-            frame, load_official_profile(assessment.total_questions),
+            frame, profile,
             min_page_area_ratio=float(current_app.config["CAMERA_MIN_PAGE_AREA_RATIO"]),
             min_confidence=float(current_app.config["CAMERA_MIN_MARKER_CONFIDENCE"]),
         )
-        signature = _print_step_signature(frame)
-        previous = marker_state.get("last_page_signature") or []
+        # Compare the student's marked responses after marker alignment. This
+        # ignores the visible stack and changing room lighting while still
+        # distinguishing sheets by their ID and answer marks. Fall back to the
+        # normalized page, then the full camera view, when alignment fails.
+        response_signature = _response_signature(frame, detection, profile, assessment.total_questions)
+        detected_student_number = _student_number_from_response(frame, detection, profile)
+        student_id_counts = dict(marker_state.get("session_student_id_counts") or {})
+        duplicate_student_id = False
+        if detected_student_number:
+            student_id_count = int(student_id_counts.get(detected_student_number, 0)) + 1
+            student_id_counts[detected_student_number] = student_id_count
+            duplicate_student_id = student_id_count >= 2
+        page_signature = detection.get("page_signature") or _print_step_signature(frame)
+        previous_response = marker_state.get("last_response_signature") or []
+        previous_page = marker_state.get("last_page_signature") or []
         duplicate_tolerance = min(1.0, max(0.0, float(current_app.config["SCAN_DUPLICATE_PAGE_MAX_CHANGE_RATIO"])))
-        same_page = bool(signature and previous and len(previous) == len(signature)
-                         and sum(left != right for left, right in zip(previous, signature)) / len(signature) <= duplicate_tolerance)
+        same_response = bool(response_signature and previous_response and response_signature == previous_response)
+        same_page_pixels = bool(page_signature and previous_page and len(previous_page) == len(page_signature)
+                                 and sum(left != right for left, right in zip(previous_page, page_signature)) / len(page_signature) <= duplicate_tolerance)
+        same_page = same_response if response_signature and previous_response else same_page_pixels
+        now = datetime.now(timezone.utc)
+        previous_signature_at = marker_state.get("last_page_signature_at")
+        signature_time_valid = False
+        try:
+            previous_signature_time = datetime.fromisoformat(str(previous_signature_at))
+            if previous_signature_time.tzinfo is None:
+                previous_signature_time = previous_signature_time.replace(tzinfo=timezone.utc)
+            duplicate_elapsed = max(0.0, (now - previous_signature_time.astimezone(timezone.utc)).total_seconds())
+            signature_time_valid = True
+        except (TypeError, ValueError):
+            duplicate_elapsed = 0.0
+        duplicate_stop_seconds = max(0.0, float(current_app.config.get("SCAN_DUPLICATE_STOP_SECONDS", 8)))
+        duplicate_confirmed = same_page and duplicate_elapsed >= duplicate_stop_seconds
+        signature_anchor = previous_signature_at if same_page and signature_time_valid else now.isoformat()
         control.marker_status = {
             **{key: value for key, value in detection.items() if key != "page_signature"},
             "printer_step": step,
-            "last_page_signature": previous if same_page else signature,
+            "last_response_signature": previous_response if same_page and response_signature else response_signature,
+            "last_page_signature": previous_page if same_page else page_signature,
+            "last_page_signature_at": signature_anchor,
+            "duplicate_candidate_since": signature_anchor if same_page and not duplicate_confirmed else None,
+            "session_student_id_counts": student_id_counts,
             "alignment_pending": not bool(detection.get("valid")),
             "retry_current_page": False,
             "retry_step": None,
@@ -203,15 +453,37 @@ def capture_step():
         control.camera_connected = True
         control.sheet_detected = True
         control.stability_status = True
-        if same_page:
+        if duplicate_student_id and same_page:
+            control.session_duplicate_frames += 1
+            control.active = False
+            control.paused = False
+            control.state = "AUTO_STOPPED_DUPLICATE_STUDENT_ID"
+            control.session_ended_at = datetime.now(timezone.utc)
+            control.last_error = "The same student ID appeared on two captured pages. Automatic scanning stopped."
+            db.session.commit()
+            return jsonify({"ok": True, "done": True, "duplicate_student_id": True,
+                            "message": control.last_error})
+
+        if duplicate_confirmed:
             control.session_duplicate_frames += 1
             control.active = False
             control.paused = False
             control.state = "AUTO_STOPPED_DUPLICATE_PAGE"
             control.session_ended_at = datetime.now(timezone.utc)
-            control.last_error = "The same answer sheet was captured twice in a row. The last capture was treated as the printer's empty-feed signal; scanning stopped."
+            control.last_error = "The same aligned answer sheet remained unchanged for at least the duplicate confirmation interval. The last capture was treated as the printer's empty-feed signal; scanning stopped."
             db.session.commit()
             return jsonify({"ok": True, "done": True, "duplicate": True, "message": control.last_error})
+
+        if same_page:
+            # A repeated image inside the confirmation window is not another
+            # student's submission. Advance this print step and let the next
+            # scheduled capture confirm whether the printer has stopped.
+            control.session_duplicate_frames += 1
+            control.state = "CONFIRMING_DUPLICATE_PAGE"
+            control.last_error = None
+            db.session.commit()
+            return jsonify({"ok": True, "done": False, "duplicate_candidate": True, "step": step,
+                            "message": "The sheet matches the previous capture; waiting for another scheduled capture to confirm printer idle."})
 
         job = queue_image_bytes(
             image_bytes, extension, assessment.id, current_app.config,
@@ -221,6 +493,17 @@ def capture_step():
                 "alignment_retry": "muse" if not detection.get("valid") else None,
             },
         )
+        if duplicate_student_id:
+            control.session_duplicate_frames += 1
+            control.active = False
+            control.paused = False
+            control.state = "AUTO_STOPPED_DUPLICATE_STUDENT_ID"
+            control.session_ended_at = datetime.now(timezone.utc)
+            control.last_error = "The same student ID appeared on two captured pages. Automatic scanning stopped; the latest page was queued for review."
+            db.session.commit()
+            return jsonify({"ok": True, "done": True, "duplicate_student_id": True,
+                            "capture_id": job.capture_id, "message": control.last_error})
+
         control.state = "QUEUED_ALIGNMENT_RETRY" if not detection.get("valid") else "WAITING_FOR_PRINTER_STEP"
         control.last_error = None
         db.session.commit()
@@ -259,7 +542,10 @@ def status():
             "printer_step": int((control.marker_status or {}).get("printer_step", 0)),
             "state": control.state,
             "sheet_detected": control.sheet_detected,
-            "marker_status": {key: value for key, value in (control.marker_status or {}).items() if key != "last_page_signature"},
+            "marker_status": {
+                key: value for key, value in (control.marker_status or {}).items()
+                if key not in {"last_page_signature", "last_response_signature", "session_student_id_counts"}
+            },
             "stability_status": control.stability_status,
             "last_error": control.last_error,
             "assessment_id": control.assessment_id,
@@ -478,11 +764,17 @@ def start():
             "duplicates": int(camera_state.duplicate_count if camera_state else 0),
         }
         control.last_error = None
-        control.marker_status = {"printer_step": 0, "last_page_signature": None}
+        control.marker_status = {
+            "printer_step": 0,
+            "last_page_signature": None,
+            "last_response_signature": None,
+            "last_page_signature_at": None,
+            "session_student_id_counts": {},
+        }
         control.state = "WAITING_FOR_PRINTER_STEP"
         db.session.commit()
         started = True
-        flash("One-page scanning enabled. The app will start one blank-page print, wait six seconds, capture a still, then continue until it sees the same sheet twice.", "success")
+        flash("One-page scanning enabled. The app will wait 16 seconds after the first print, then 12 seconds after each later print before capturing.", "success")
     except SQLAlchemyError:
         db.session.rollback()
         flash("The scanner queue migration is not installed. Review required migrations through 20261105_0012.", "error")
@@ -518,7 +810,7 @@ def resume():
                 # queued. Alignment failures and camera capture errors both
                 # leave the current physical sheet uncommitted, so resume
                 # must capture that same sheet before requesting another page.
-                marker_state["retry_step"] = current_step
+                marker_state["retry_step"] = int(marker_state.get("print_started_step") or (current_step + 1))
                 control.marker_status = marker_state
             control.paused = False
             control.session_ended_at = None
@@ -587,4 +879,201 @@ def retry_capture(job_id: int):
     except SQLAlchemyError:
         db.session.rollback()
         flash("The scanner queue migration is not installed yet.", "error")
+    return redirect(url_for("automatic_scanning.dashboard"))
+
+
+@automatic_scanning_bp.route("/batch-review/<int:assessment_id>")
+def batch_review(assessment_id: int):
+    assessment = _assessment_ready(assessment_id)
+    if assessment is None:
+        flash("Choose an assessment with a complete answer key before reviewing captured sheets.", "error")
+        return redirect(url_for("automatic_scanning.dashboard"))
+    drafts = _automatic_drafts(assessment.id)
+    if not drafts:
+        flash("There are no automatic captures awaiting review for this assessment.", "info")
+        return redirect(url_for("automatic_scanning.dashboard", assessment_id=assessment.id))
+    mapping = db.session.scalar(
+        select(CanvasAssessmentMapping).where(CanvasAssessmentMapping.assessment_id == assessment.id)
+    )
+    canvas_ready = bool(db.session.get(CanvasConnection, 1) and mapping and mapping.assignment_id)
+    return render_template(
+        "automatic_scan_batch_review.html",
+        assessment=assessment,
+        review_rows=_batch_review_rows(drafts),
+        canvas_ready=canvas_ready,
+        all_assessments=False,
+    )
+
+
+@automatic_scanning_bp.route("/batch-review/all")
+def batch_review_all():
+    drafts = _all_automatic_drafts()
+    if not drafts:
+        flash("There are no automatic captures awaiting review.", "info")
+        return redirect(url_for("automatic_scanning.dashboard"))
+    return render_template(
+        "automatic_scan_batch_review.html",
+        assessment=None,
+        review_rows=_batch_review_rows(drafts),
+        canvas_ready=False,
+        all_assessments=True,
+    )
+
+
+@automatic_scanning_bp.route("/batch-review/<int:assessment_id>/save", methods=["POST"])
+def batch_review_save(assessment_id: int):
+    assessment = _assessment_ready(assessment_id)
+    if assessment is None:
+        flash("Choose an assessment with a complete answer key before saving captured sheets.", "error")
+        return redirect(url_for("automatic_scanning.dashboard"))
+    if request.form.get("confirm_batch") != "yes":
+        flash("Confirm that you reviewed every capture's student ID and answers.", "error")
+        return redirect(url_for("automatic_scanning.batch_review", assessment_id=assessment.id))
+
+    drafts = _automatic_drafts(assessment.id)
+    if not drafts:
+        flash("There are no automatic captures awaiting review for this assessment.", "info")
+        return redirect(url_for("automatic_scanning.batch_review", assessment_id=assessment.id))
+
+    saved = 0
+    skipped = []
+    for draft in drafts:
+        prefix = f"draft_{draft.id}"
+        student = db.session.get(Student, request.form.get(f"{prefix}_student_id", type=int))
+        if student is None:
+            skipped.append(f"Capture {draft.id}: select a student.")
+            continue
+        submitted_answers = [
+            request.form.get(f"{prefix}_answer_{number}", "")
+            for number in range(1, draft.question_count + 1)
+        ]
+        if any(answer not in {"__blank__", "A", "B", "C", "D", "E"} for answer in submitted_answers):
+            skipped.append(f"Capture {draft.id}: select an answer or confirm blank for every question.")
+            continue
+        final_answers = [None if answer == "__blank__" else answer for answer in submitted_answers]
+        try:
+            confirm_v3_scan_draft(draft, student, final_answers)
+            saved += 1
+        except ValueError as error:
+            skipped.append(f"Capture {draft.id}: {error}")
+        except SQLAlchemyError:
+            db.session.rollback()
+            skipped.append(f"Capture {draft.id}: the database could not save this submission.")
+            break
+
+    if saved:
+        flash(f"Saved {saved} capture(s) as graded submissions for analytics.", "success")
+    if skipped:
+        details = " ".join(skipped[:6])
+        if len(skipped) > 6:
+            details += f" Plus {len(skipped) - 6} more capture(s) that still need review."
+        flash(details, "warning")
+    if not saved and not skipped:
+        flash("No capture was saved.", "info")
+
+    if request.form.get("open_canvas_preview") == "yes" and saved:
+        mapping = db.session.scalar(
+            select(CanvasAssessmentMapping).where(CanvasAssessmentMapping.assessment_id == assessment.id)
+        )
+        connection = db.session.get(CanvasConnection, 1)
+        if connection and mapping and mapping.assignment_id:
+            return redirect(url_for("canvas.grade_preview", assessment_id=assessment.id))
+        flash("Connect Canvas and map this assessment to a course assignment before previewing grades.", "info")
+        return redirect(url_for("canvas.assessment_setup", assessment_id=assessment.id))
+    return redirect(url_for("automatic_scanning.dashboard", assessment_id=assessment.id))
+
+
+@automatic_scanning_bp.route("/batch-review/all/save", methods=["POST"])
+def batch_review_all_save():
+    if request.form.get("confirm_batch") != "yes":
+        flash("Confirm that you reviewed every capture's student ID and answers.", "error")
+        return redirect(url_for("automatic_scanning.batch_review_all"))
+    drafts = _all_automatic_drafts()
+    if not drafts:
+        flash("There are no automatic captures awaiting review.", "info")
+        return redirect(url_for("automatic_scanning.dashboard"))
+    saved = 0
+    skipped = []
+    for draft in drafts:
+        prefix = f"draft_{draft.id}"
+        student = db.session.get(Student, request.form.get(f"{prefix}_student_id", type=int))
+        if student is None:
+            skipped.append(f"Capture {draft.id}: select a student.")
+            continue
+        answers = [request.form.get(f"{prefix}_answer_{number}", "") for number in range(1, draft.question_count + 1)]
+        if any(answer not in {"__blank__", "A", "B", "C", "D", "E"} for answer in answers):
+            skipped.append(f"Capture {draft.id}: select an answer or confirm blank for every question.")
+            continue
+        try:
+            confirm_v3_scan_draft(draft, student, [None if answer == "__blank__" else answer for answer in answers])
+            saved += 1
+        except ValueError as error:
+            skipped.append(f"Capture {draft.id}: {error}")
+        except SQLAlchemyError:
+            db.session.rollback()
+            skipped.append(f"Capture {draft.id}: the database could not save this submission.")
+            break
+    if saved:
+        flash(f"Saved {saved} capture(s) as graded submissions for analytics.", "success")
+    if skipped:
+        details = " ".join(skipped[:6])
+        if len(skipped) > 6:
+            details += f" Plus {len(skipped) - 6} more capture(s) that still need review."
+        flash(details, "warning")
+    return redirect(url_for("automatic_scanning.dashboard"))
+
+
+@automatic_scanning_bp.route("/<int:job_id>/delete", methods=["POST"])
+def delete_capture(job_id: int):
+    try:
+        outcome = delete_capture_job(job_id, current_app.config["UPLOAD_FOLDER"])
+        if outcome["submission_saved"]:
+            flash("Capture removed from recent captures. Its submitted grade and evidence were kept.", "success")
+        elif outcome["draft_deleted"]:
+            flash("Capture and its unsubmitted review draft were deleted.", "success")
+        else:
+            flash("Capture and its saved image were deleted.", "success")
+        if outcome["cleanup_errors"]:
+            current_app.logger.warning("Could not remove all files for deleted capture job %s", job_id)
+    except ValueError as error:
+        flash(str(error), "error")
+    except SQLAlchemyError:
+        db.session.rollback()
+        flash("The capture could not be deleted. No database changes were saved.", "error")
+    return redirect(url_for("automatic_scanning.dashboard"))
+
+
+@automatic_scanning_bp.route("/clear-queue", methods=["POST"])
+def clear_queue():
+    try:
+        control = get_scanner_control()
+        if control.active:
+            flash("Stop automatic scanning before clearing the queue.", "error")
+            return redirect(url_for("automatic_scanning.dashboard"))
+        camera_setup = get_camera_setup(current_app.config)
+        poller = db.session.get(CameraIngestionState, camera_setup["camera_id"])
+        if poller is not None and poller.polling_enabled:
+            flash("Stop CameraWebServer polling before clearing the queue.", "error")
+            return redirect(url_for("automatic_scanning.dashboard"))
+
+        outcome = clear_capture_queue(current_app.config["UPLOAD_FOLDER"])
+        removed = outcome["removed_queued"] + outcome["removed_finished"]
+        if removed:
+            message = (
+                f"Cleared {removed} capture(s) ({outcome['removed_queued']} queued, "
+                f"{outcome['removed_finished']} finished); unsubmitted drafts were deleted, "
+                f"and {outcome['preserved_submissions']} submitted grade(s) were kept."
+            )
+            if outcome["processing_skipped"]:
+                message += f" {outcome['processing_skipped']} in-progress capture(s) were left to finish."
+            flash(message, "success")
+        elif outcome["processing_skipped"]:
+            flash(f"No removable captures were found; {outcome['processing_skipped']} capture(s) are still processing.", "info")
+        else:
+            flash("The capture queue is already empty.", "info")
+        if outcome["cleanup_errors"]:
+            current_app.logger.warning("Could not remove all files while clearing the capture queue")
+    except SQLAlchemyError:
+        db.session.rollback()
+        flash("The capture queue could not be cleared. No database changes were saved.", "error")
     return redirect(url_for("automatic_scanning.dashboard"))

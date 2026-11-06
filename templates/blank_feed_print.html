@@ -19,13 +19,27 @@
   </style>
 </head>
 <body>
-  <div class="notice">One blank A4 feed page. Paparazzi will capture a still six seconds after print is initiated.</div>
+  <div class="notice">One blank A4 feed page. Paparazzi will capture a still {{ 16 if step|int == 1 else 12 }} seconds after print starts.</div>
   {% for _page in range(page_count) %}<div class="feed-page" aria-hidden="true"></div>{% endfor %}
   <script>
     const step = {{ step|int }};
-    window.addEventListener('load', () => window.setTimeout(() => {
-      if (window.parent !== window) window.parent.postMessage({ type: 'paparazzi-print-started', step }, window.location.origin);
+    const startedUrl = {{ url_for('automatic_scanning.print_step_started')|tojson }};
+    const csrfToken = {{ csrf_token()|tojson }};
+    window.addEventListener('load', () => window.setTimeout(async () => {
       window.print();
+      if (window.parent === window) return;
+      try {
+        const response = await fetch(startedUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+          body: new URLSearchParams({ step: String(step), csrf_token: csrfToken }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.ok) throw new Error(result.error || 'The print start could not be recorded.');
+        window.parent.postMessage({ type: 'paparazzi-print-started', step }, window.location.origin);
+      } catch (error) {
+        window.parent.postMessage({ type: 'paparazzi-print-error', step, error: error.message }, window.location.origin);
+      }
     }, 350));
   </script>
 </body>

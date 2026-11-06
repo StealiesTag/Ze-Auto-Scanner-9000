@@ -43,6 +43,7 @@ class Config:
     PAPARAZZI_CAMERA_ID = os.getenv("PAPARAZZI_CAMERA_ID", "paparazzi-esp32-01")
     PAPARAZZI_CAMERA_POLL_INTERVAL = float(os.getenv("PAPARAZZI_CAMERA_POLL_INTERVAL", "3.5"))
     PAPARAZZI_CAMERA_TIMEOUT = float(os.getenv("PAPARAZZI_CAMERA_TIMEOUT", "5"))
+    AUTO_START_SCAN_WORKER = os.getenv("AUTO_START_SCAN_WORKER", "true").strip().lower() not in {"0", "false", "no", "off"}
     PRINTER_BLANK_FEED_PAGE_COUNT = int(os.getenv("PRINTER_BLANK_FEED_PAGE_COUNT", "200"))
     SCAN_IDLE_STOP_SECONDS = int(os.getenv("SCAN_IDLE_STOP_SECONDS", "90"))
     SCAN_DUPLICATE_STOP_SECONDS = float(os.getenv("SCAN_DUPLICATE_STOP_SECONDS", "8"))

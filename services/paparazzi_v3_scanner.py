@@ -82,7 +82,7 @@ def load_official_profile(question_count: int) -> dict:
 
     profile = json.loads(json.dumps(load_v4_profile()))
     profile["version"] = "PAPARAZZI-OMR-A4-OFFICIAL"
-    profile["source_description"] = "The official 20-question fixture sheet."
+    profile["source_description"] = "The official 20Q_Big A4 sheet supplied in test_fixtures."
     # The supplied 20Q PDF has a single 20-row answer column and a large
     # seven-digit ID grid. Its answer centers match the first column of the
     # supplied large-bubble 50Q sheet.
@@ -112,6 +112,19 @@ def load_official_profile(question_count: int) -> dict:
                 ],
             }
         },
+    })
+    # 20Q_Big uses larger 9 mm registration squares placed closer to the
+    # page corners than the generated V4 sheet. Coordinates are measured
+    # from test_fixtures/Answer_Sheet_20Q_Big.pdf.pdf.pdf.
+    profile["registration_marks"].update({
+        "size_mm": 9.03,
+        "inset_mm": 3.0,
+        "positions_top_left_origin_mm": [
+            [2.82, 3.10], [196.62, 3.10], [3.72, 282.02], [196.62, 281.92],
+        ],
+        "positions_bottom_left_origin_mm": [
+            [2.82, 284.89], [196.62, 284.89], [3.72, 5.95], [196.62, 6.05],
+        ],
     })
     return profile
 
@@ -413,7 +426,7 @@ def align_paparazzi_v3(
     else:
         candidates = [
             candidate for candidate in _find_square_candidates(gray)
-            if candidate["side"] >= max(12.0, min(gray.shape) * 0.015)
+            if candidate["side"] >= max(5.0, min(gray.shape) * 0.008)
         ]
         if len(candidates) < 4:
             raise ImageProcessingError("Could not find the four registration marks. Include the whole page and all corners.")
@@ -432,7 +445,44 @@ def align_paparazzi_v3(
             "Retake the photo with all four corners sharp, evenly lit, and unobstructed."
         )
 
+    # Muse is only a locator. A plausible-looking set of four boxes can still
+    # describe another rectangle in the scene, so validate the implied page
+    # corners before using the points to warp the image. This prevents a bad
+    # model response from turning a background crop into an aligned sheet.
     page = profile["paper"]
+    expected_centers = _profile_mark_centers(profile)
+    expected_mark_points = np.asarray([
+        expected_centers[key]
+        for key in ("topleft", "topright", "bottomright", "bottomleft")
+    ], dtype=np.float32)
+    page_mm = np.asarray([
+        [0, 0],
+        [page["width_mm"], 0],
+        [page["width_mm"], page["height_mm"]],
+        [0, page["height_mm"]],
+    ], dtype=np.float32).reshape(1, 4, 2)
+    image_height, image_width = gray.shape
+    margin_x, margin_y = max(8.0, image_width * 0.025), max(8.0, image_height * 0.025)
+    valid_page_projections = []
+    for shift in range(4):
+        source = np.roll(ordered, -shift, axis=0).astype(np.float32)
+        marker_to_image = cv2.getPerspectiveTransform(expected_mark_points, source)
+        page_corners = cv2.perspectiveTransform(page_mm, marker_to_image)[0]
+        inside_frame = bool(
+            np.all(page_corners[:, 0] >= -margin_x)
+            and np.all(page_corners[:, 0] <= image_width + margin_x)
+            and np.all(page_corners[:, 1] >= -margin_y)
+            and np.all(page_corners[:, 1] <= image_height + margin_y)
+        )
+        page_area_ratio = abs(cv2.contourArea(page_corners.astype(np.float32))) / float(image_width * image_height)
+        if inside_frame and page_area_ratio >= 0.16:
+            valid_page_projections.append(page_area_ratio)
+    if not valid_page_projections:
+        raise ImageProcessingError(
+            "The detected marks do not describe a full, visible answer sheet in the camera image. "
+            "The alignment was rejected; keep the original capture and retake with the full sheet visible."
+        )
+
     scale = CANONICAL_DPI / 25.4
     output_width = round(page["width_mm"] * scale)
     output_height = round(page["height_mm"] * scale)

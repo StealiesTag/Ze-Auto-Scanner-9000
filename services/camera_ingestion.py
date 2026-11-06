@@ -15,6 +15,7 @@ from models import Assessment, CameraIngestionState, CaptureJob, ScannerControl
 from services.camera_image_validation import validate_camera_image
 from services.capture_queue import QueueFullError, queue_image_bytes
 from services.capture_state_machine import CaptureStateMachine
+from services.paparazzi_v3_scanner import load_official_profile
 
 
 @dataclass
@@ -92,7 +93,10 @@ def ingest_camera_image_bytes(
     if captured_at is None:
         captured_at = datetime.now(timezone.utc)
 
-    validation = validate_camera_image(image_bytes, content_type, current_app.config)
+    setup_control = db.session.get(ScannerControl, 1)
+    setup_assessment = db.session.get(Assessment, setup_control.assessment_id) if setup_control and setup_control.assessment_id else None
+    profile = load_official_profile(setup_assessment.total_questions) if setup_assessment and setup_assessment.total_questions in {20, 50} else load_official_profile(20)
+    validation = validate_camera_image(image_bytes, content_type, current_app.config, profile=profile)
     try:
         camera_state = lock_camera_state(camera_id)
         camera_state.received_count += 1
@@ -124,9 +128,8 @@ def ingest_camera_image_bytes(
                 "locator_source": validation.get("locator_source"),
             })
 
-        control = db.session.get(ScannerControl, 1)
-        assessment_id = control.assessment_id if control else None
-        assessment = db.session.get(Assessment, assessment_id) if assessment_id else None
+        control = setup_control
+        assessment = setup_assessment
         if assessment is None or assessment.answer_sheet_version != "V4" or assessment.total_questions not in {20, 50}:
             db.session.rollback()
             return IngestionResult({"success": False, "status": "error", "reason": "assessment_not_selected", "message": "Select a complete 20- or 50-question assessment in Automatic Scanning before accepting images."}, 409)

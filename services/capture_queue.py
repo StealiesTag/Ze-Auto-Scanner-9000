@@ -215,6 +215,106 @@ def retry_failed_job(job_id: int) -> CaptureJob:
     return job
 
 
+def delete_capture_job(job_id: int, upload_folder: str | Path) -> dict:
+    """Remove a finished capture from recents without deleting submitted grades."""
+    job = db.session.scalar(select(CaptureJob).where(CaptureJob.id == job_id).with_for_update())
+    if job is None:
+        raise ValueError("Capture not found.")
+    if job.status in PENDING_STATUSES:
+        raise ValueError("Queued or processing captures cannot be deleted yet.")
+
+    submission_saved = job.submission_id is not None
+    draft = job.draft
+    draft_deleted = draft is not None and not submission_saved
+    filenames: set[str] = set()
+    if not submission_saved:
+        filenames.add(job.image_filename)
+        if draft_deleted:
+            filenames.update((draft.original_image, draft.aligned_image, draft.debug_image))
+
+    if draft_deleted:
+        job.draft_id = None
+        db.session.delete(draft)
+    db.session.delete(job)
+    db.session.commit()
+
+    cleanup_errors = []
+    folder = Path(upload_folder).resolve()
+    for filename in filenames:
+        if not filename or Path(filename).name != filename:
+            continue
+        image_path = (folder / filename).resolve()
+        if image_path.parent != folder:
+            continue
+        try:
+            image_path.unlink(missing_ok=True)
+        except OSError:
+            cleanup_errors.append(filename)
+    return {
+        "submission_saved": submission_saved,
+        "draft_deleted": draft_deleted,
+        "cleanup_errors": cleanup_errors,
+    }
+
+
+def clear_capture_queue(upload_folder: str | Path) -> dict:
+    """Delete removable queue rows in one transaction; leave in-flight work alone."""
+    jobs = db.session.scalars(
+        select(CaptureJob)
+        .where(CaptureJob.status != "PROCESSING")
+        .order_by(CaptureJob.id)
+        .with_for_update(skip_locked=True)
+    ).all()
+    filenames: set[str] = set()
+    removed_queued = 0
+    removed_finished = 0
+    preserved_submissions = 0
+    drafts_deleted = 0
+
+    for job in jobs:
+        if job.status == "QUEUED":
+            removed_queued += 1
+        else:
+            removed_finished += 1
+        if job.submission_id is not None:
+            preserved_submissions += 1
+        else:
+            filenames.add(job.image_filename)
+            if job.draft is not None:
+                draft = job.draft
+                filenames.update((draft.original_image, draft.aligned_image, draft.debug_image))
+                job.draft_id = None
+                db.session.delete(draft)
+                drafts_deleted += 1
+        db.session.delete(job)
+
+    processing_skipped = db.session.scalar(
+        select(func.count(CaptureJob.id)).where(CaptureJob.status == "PROCESSING")
+    ) or 0
+    db.session.commit()
+
+    cleanup_errors = []
+    folder = Path(upload_folder).resolve()
+    for filename in filenames:
+        if not filename or Path(filename).name != filename:
+            continue
+        image_path = (folder / filename).resolve()
+        if image_path.parent != folder:
+            continue
+        try:
+            image_path.unlink(missing_ok=True)
+        except OSError:
+            cleanup_errors.append(filename)
+    return {
+        "removed_queued": removed_queued,
+        "removed_finished": removed_finished,
+        "preserved_submissions": preserved_submissions,
+        "drafts_deleted": drafts_deleted,
+        "processing_skipped": int(processing_skipped),
+        "cleanup_errors": cleanup_errors,
+    }
+
+
 def acquire_worker_lock():
     """Hold one PostgreSQL session advisory lock for this entire daemon lifetime."""
     connection = db.engine.connect()

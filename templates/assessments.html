@@ -2,8 +2,8 @@
 {% block title %}Assessments{% endblock %}
 {% block content %}
 <section class="card">
-  <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
-    <div><h1>Assessments</h1><p class="text-muted mb-0">Create answer keys and generate student sheets.</p></div>
+  <div class="page-intro">
+    <div><p class="eyebrow">TESTS & ANSWER KEYS</p><h1>Assessments</h1><p class="text-muted mb-0">Build the test, set its key, and prepare the matching scan sheet.</p></div>
     <a class="btn btn-primary" href="{{ url_for('assessment.new_assessment') }}">Create assessment</a>
   </div>
   <div class="table-responsive mt-3"><table class="table align-middle">

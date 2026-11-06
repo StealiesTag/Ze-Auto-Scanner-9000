@@ -76,7 +76,7 @@ def _capture_first_sheet(machine, signature):
 
 
 def test_marker_detector_uses_v3_profile_and_recognizes_full_sheet(blank_v3_frame):
-    result = detect_v3_registration_markers(blank_v3_frame)
+    result = detect_v3_registration_markers(blank_v3_frame, load_v3_profile())
     assert result["valid"] is True
     assert result["markers_visible"] is True
     assert result["geometry_valid"] is True
@@ -94,15 +94,16 @@ def test_marker_detector_rejects_missing_registration_mark(blank_v3_frame):
     half = round(profile["registration_marks"]["size_mm"] * (px + py) / 4)
     cx, cy = round(x * px), round(y * py)
     cv2.rectangle(blank_v3_frame, (cx - half - 3, cy - half - 3), (cx + half + 3, cy + half + 3), (255, 255, 255), -1)
-    result = detect_v3_registration_markers(blank_v3_frame)
+    result = detect_v3_registration_markers(blank_v3_frame, profile)
     assert result["valid"] is False
 
 
 def test_marker_detector_survives_lighting_and_unrelated_square_contours(blank_v3_frame):
     lighter = cv2.convertScaleAbs(blank_v3_frame, alpha=0.72, beta=70)
-    result = detect_v3_registration_markers(lighter)
+    profile = load_v3_profile()
+    result = detect_v3_registration_markers(lighter, profile)
     assert result["valid"] is True
-    original = detect_v3_registration_markers(blank_v3_frame)
+    original = detect_v3_registration_markers(blank_v3_frame, profile)
     lighting_change = sum(a != b for a, b in zip(original["page_signature"], result["page_signature"])) / len(original["page_signature"])
     assert lighting_change < 0.0015
     profile = load_v3_profile()
@@ -116,18 +117,18 @@ def test_marker_detector_survives_lighting_and_unrelated_square_contours(blank_v
         choice = "ABCDE"[(question - 1) % 5]
         x_mm, y_mm = answer_centers[question]["ABCDE".index(choice)]
         cv2.circle(blank_v3_frame, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), 10, (15, 15, 15), -1)
-    marked = detect_v3_registration_markers(blank_v3_frame)
+    marked = detect_v3_registration_markers(blank_v3_frame, profile)
     content_change = sum(a != b for a, b in zip(original["page_signature"], marked["page_signature"])) / len(original["page_signature"])
     assert content_change > 0.0015
     cv2.rectangle(blank_v3_frame, (700, 300), (780, 380), (0, 0, 0), -1)
     cv2.rectangle(blank_v3_frame, (1000, 500), (1080, 580), (0, 0, 0), -1)
-    with_false_squares = detect_v3_registration_markers(blank_v3_frame)
+    with_false_squares = detect_v3_registration_markers(blank_v3_frame, profile)
     assert with_false_squares["valid"] is True
 
 
 def test_marker_detector_rejects_partial_or_wrong_geometry(blank_v3_frame):
     cropped = blank_v3_frame[:-350, :]
-    assert detect_v3_registration_markers(cropped)["valid"] is False
+    assert detect_v3_registration_markers(cropped, load_v3_profile())["valid"] is False
     wrong = np.full((900, 900, 3), 255, dtype=np.uint8)
     for x, y in ((100, 100), (780, 100), (780, 300), (100, 300)):
         cv2.rectangle(wrong, (x, y), (x + 40, y + 40), (0, 0, 0), -1)

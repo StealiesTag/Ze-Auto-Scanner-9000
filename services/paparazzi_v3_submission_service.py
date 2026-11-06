@@ -57,8 +57,8 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
             min_page_area_ratio=float(app_config.get("CAMERA_MIN_PAGE_AREA_RATIO", 0.25)),
             min_confidence=marker_confidence,
         )
-        locator = configured_muse_locator(app_config) if not local_markers.get("valid") else None
-        marker_candidates = locator.locate(image) if locator is not None else None
+        locator = configured_muse_locator(app_config, profile) if not local_markers.get("valid") else None
+        marker_candidates = locator.locate(image, profile=profile) if locator is not None else None
         if not marker_candidates:
             raise local_error
         alignment = align_paparazzi_v3(image, profile, question_count=question_count, min_marker_confidence=marker_confidence, marker_candidates=marker_candidates)

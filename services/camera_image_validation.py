@@ -6,6 +6,7 @@ import numpy as np
 
 from services.marker_detection import detect_v3_registration_markers
 from services.muse_marker_locator import configured_muse_locator
+from services.paparazzi_v3_scanner import load_official_profile
 
 
 SUPPORTED_TYPES = {
@@ -18,6 +19,7 @@ def validate_camera_image(
     image_bytes: bytes,
     content_type: str,
     app_config: dict,
+    profile: dict | None = None,
 ) -> dict:
     """Decode bytes and validate the four official registration markers without running OMR or database work."""
     normalized_type = (content_type or "").split(";", 1)[0].strip().lower()
@@ -37,11 +39,13 @@ def validate_camera_image(
     height, width = image.shape[:2]
     if min(width, height) < 400 or max(width, height) > int(app_config["MAX_IMAGE_DIMENSION"]):
         return _invalid("invalid_dimensions", "The image must show a full page and remain within configured dimensions.")
+    profile = profile or load_official_profile(20)
     detection = detect_v3_registration_markers(
         image,
+        profile=profile,
         min_page_area_ratio=float(app_config["CAMERA_MIN_PAGE_AREA_RATIO"]),
         min_confidence=float(app_config["CAMERA_MIN_MARKER_CONFIDENCE"]),
-        muse_locator=configured_muse_locator(app_config),
+        muse_locator=configured_muse_locator(app_config, profile),
     )
     confidence = float(detection.get("confidence") or 0.0)
     confidence_valid = confidence >= float(app_config["CAMERA_MIN_MARKER_CONFIDENCE"])

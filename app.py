@@ -1,4 +1,5 @@
 import os
+import threading
 
 from flask import Flask, render_template
 from sqlalchemy.engine import make_url
@@ -56,6 +57,26 @@ def create_app(config_name: str = "default") -> Flask:
             raise RuntimeError(str(error)) from error
     if not app.config["PAPARAZZI_CAMERA_ID"] or len(app.config["PAPARAZZI_CAMERA_ID"]) > 100:
         raise RuntimeError("PAPARAZZI_CAMERA_ID must contain 1-100 characters.")
+
+    if config_name != "testing" and app.config.get("AUTO_START_SCAN_WORKER", True):
+        from services.scan_worker import run_scan_worker
+
+        stop_event = threading.Event()
+
+        def start_queue_consumer() -> None:
+            try:
+                run_scan_worker(app, stop_event)
+            except RuntimeError as error:
+                # A separately managed worker may already own the database lock.
+                app.logger.info("Embedded Paparazzi queue consumer not started: %s", error)
+
+        worker_thread = threading.Thread(
+            target=start_queue_consumer,
+            name="paparazzi-scan-worker-supervisor",
+            daemon=True,
+        )
+        worker_thread.start()
+        app.extensions["paparazzi_scan_worker"] = (worker_thread, stop_event)
 
     @app.errorhandler(413)
     def upload_too_large(_error):

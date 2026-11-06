@@ -4,7 +4,7 @@
 
 The ESP32 live preview and `/capture` endpoint have been reached from this workspace. The one-page print/capture timing and repeated-signature stop rule still need supervised validation with the actual printer and camera.
 
-Automatic paper feeding is coordinated one page at a time by the browser. When each print is initiated, it waits six seconds, requests an ESP32 still, checks the official sheet's registration geometry, and queues a valid image. The next blank page is not requested until that capture is processed. Consecutive stills are perspective-normalized and compared; an identical repeat is treated as the end-of-paper signal and is not queued a second time. Physical printer behavior still needs validation because this signal cannot distinguish an empty tray from a jam or a second sheet with identical marks.
+Automatic paper feeding is coordinated one page at a time by the browser. After the first print is initiated, it waits 16 seconds to allow printer calibration; later print steps wait 12 seconds. It then requests an ESP32 still, checks the official sheet's registration geometry, and queues the image. Images with invalid local geometry are queued for Muse-assisted alignment. The next blank page is not requested until that capture is queued. Consecutive stills are compared; an identical repeat is treated as the end-of-paper signal and is not queued a second time. Physical printer behavior still needs validation because this signal cannot distinguish an empty tray from a jam or a second sheet with identical marks.
 
 ## Camera configuration
 
@@ -23,21 +23,15 @@ CAMERA_MIN_PAGE_AREA_RATIO=0.25
 CAPTURE_QUEUE_CAPACITY=25
 ```
 
-The browser preview uses the configured MJPEG URL. Each one-page scan step requests one still from the configured capture endpoint six seconds after initiating print. HTTP errors, disconnections, invalid MIME types, invalid images, timeout, or oversize images pause the scan and are reported in the dashboard. Camera failures do not create jobs.
+The browser preview uses the configured MJPEG URL. The first one-page scan step requests one still from the configured capture endpoint 16 seconds after initiating print; later steps use a 12-second delay. HTTP errors, disconnections, invalid MIME types, invalid images, timeout, or oversize images pause the scan and are reported in the dashboard. Camera failures do not create jobs.
 
 ## Start and operate
 
 1. Back up the PostgreSQL database, inspect the Alembic revision and migration history, then apply revisions through `20261105_0012`. This includes AI suggestions, scanner control/queue, saved camera setup/session progress, PDF mapping, and Canvas sync schema.
 2. Start the Flask app on localhost and save the camera ID, stream/still URLs, and timeout once under **Automatic scanning**. Only literal private/local IP camera addresses are accepted.
-3. In another terminal, run the queue consumer:
-
-   ```powershell
-   python -m services.scan_worker
-   ```
-
-   A PostgreSQL session advisory lock prevents a second scan worker from starting. The Flask app itself does not spawn worker threads.
-4. Configure silent printing once on the scanning computer. Chrome can use the `--kiosk-printing` launch switch; Edge uses the managed `SilentPrintingEnabled` policy. The scanning page includes setup instructions and requires confirmation before starting. Select an assessment with a complete 20- or 50-question A-E key, then load completed sheets in the printer tray and start. For every cycle, the browser initiates one blank A4 print, waits six seconds, requests a still, validates it, and queues it before printing the next page.
-5. Inspect queued images under **Recent captures**. The consumer uses the standard V4 profile, reads the student ID and answers, and creates a normal scan draft. High-confidence, fully matched readings can be graded automatically; other scans remain drafts for teacher review. The teacher can correct any uncertain fields before grading.
+3. The Flask app starts the queue consumer automatically. A PostgreSQL session advisory lock prevents duplicate consumers. To manage the worker separately, set `AUTO_START_SCAN_WORKER=false` and run `python -m services.scan_worker` in one terminal.
+4. Configure silent printing once on the scanning computer. Chrome can use the `--kiosk-printing` launch switch; Edge uses the managed `SilentPrintingEnabled` policy. The scanning page includes setup instructions and requires confirmation before starting. Select an assessment with a complete 20- or 50-question A-E key, then load completed sheets in the printer tray and start. The first cycle waits 16 seconds after the blank A4 print; later cycles wait 12 seconds before requesting a still. The image is queued before the browser prints the next page.
+5. Inspect processed images under **Recent captures**. The consumer uses the selected official sheet profile, reads the student ID and answers, and creates a normal scan draft. High-confidence, fully matched readings can be graded automatically; other scans remain drafts for teacher review. The teacher can correct any uncertain fields before grading.
 
 When the same normalized page signature appears on two consecutive captures, the second capture is discarded and the print loop ends with `AUTO_STOPPED_DUPLICATE_PAGE`. A page that fails geometry checks pauses scanning for review instead of being treated as an empty-feed signal.
 
@@ -45,7 +39,7 @@ Pause stops the page loop while the consumer continues processing. Stop clears t
 
 ## Marker and replacement detection
 
-Live grayscale frames use the shared A4 square-mark geometry. Final answer alignment and bubble reading use the standard V4 profile; its generated profile lives alongside its generated PDFs under `static/answer_sheets/v4/`. The detector checks corner arrangement, expected A4 ratio and marker size, projected page bounds, and minimum page area. It returns marker coordinates, geometry confidence/status, bottom-marker visibility, page visibility, and a normalized signature.
+Live grayscale frames and final answer alignment use the profile selected by question count. The 20-question profile matches 20Q_Big's one-column answer grid, seven-digit ID grid, and enlarged registration squares; the 50-question profile matches the large-bubble sheet. The detector checks corner arrangement, expected A4 ratio and marker size, projected page bounds, and minimum page area. It returns marker coordinates, geometry confidence/status, bottom-marker visibility, page visibility, and a normalized signature.
 
 Each scheduled capture validates the marker geometry on its own still image. Its normalized page signature is compared with the preceding accepted capture to detect the repeated last sheet. The signature is evidence of image similarity, not a physical page identifier; identical answer patterns and camera positioning can therefore produce an early stop.
 

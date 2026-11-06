@@ -28,15 +28,14 @@ The URL is server configuration only; the dashboard has no URL input and control
 
 ## Start services
 
-Apply reviewed migrations to the intended environment first; the development database has not been migrated by this change. Start the Flask app, one scan worker, and one camera poller in separate terminals or managed services:
+Apply reviewed migrations to the intended environment first. Start the Flask app and one camera poller in separate terminals or managed services; the Flask app starts the capture queue consumer automatically:
 
 ```powershell
 python -m flask --app app run
-python -m services.scan_worker
 python -m services.camera_poller
 ```
 
-Select a complete V4 assessment in Automatic Scanning. Enter `CAMERA_CONTROL_TOKEN` in the dashboard form and choose **Start polling**. The separate poller process sees the persisted flag and starts fetching. **Stop polling** disables that flag; SIGINT/SIGTERM also shuts down the poller gracefully. The poller holds a PostgreSQL advisory session lock keyed by camera ID, so a second poller for the same camera exits rather than double-fetching. The V4 scan worker has its own independent lock and continues processing queued drafts.
+Select a complete 20- or 50-question assessment in Automatic Scanning. Enter `CAMERA_CONTROL_TOKEN` in the dashboard form and choose **Start polling**. The separate poller process sees the persisted flag and starts fetching. **Stop polling** disables that flag; SIGINT/SIGTERM also shuts down the poller gracefully. The poller holds a PostgreSQL advisory session lock keyed by camera ID, so a second poller for the same camera exits rather than double-fetching. The embedded scan consumer holds its own independent lock and processes queued drafts. Set `AUTO_START_SCAN_WORKER=false` only if managing `python -m services.scan_worker` as a separate service.
 
 ## Processing and status
 

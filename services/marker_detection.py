@@ -40,7 +40,10 @@ def detect_v3_registration_markers(
         return _empty_detection("frame_too_small")
     candidates = [
         candidate for candidate in _find_square_candidates(gray)
-        if candidate["side"] >= max(12.0, min(gray.shape) * 0.015)
+        # At typical ESP32 framing the printed corner marks can be only 6–10
+        # pixels wide. Keep these candidates; the official mark-size and
+        # four-corner geometry checks below reject bubble outlines and noise.
+        if candidate["side"] >= max(5.0, min(gray.shape) * 0.008)
     ]
     if len(candidates) < 4 and muse_locator is None:
         return _empty_detection("markers_not_found", detected_markers=len(candidates))
@@ -52,7 +55,7 @@ def detect_v3_registration_markers(
             combinations.append((scored[0], _order_quad(np.asarray([item["center"] for item in group], dtype=np.float32)), "opencv"))
     local_best_score = min((item[0] for item in combinations), default=None)
     if muse_locator is not None and (local_best_score is None or _marker_confidence_from_geometry_score(local_best_score) < min_confidence):
-        muse_candidates = muse_locator.locate(gray)
+        muse_candidates = muse_locator.locate(gray, profile=profile)
         if muse_candidates:
             muse_score = _combination_score(tuple(muse_candidates), profile, gray.shape)
             if muse_score is not None:

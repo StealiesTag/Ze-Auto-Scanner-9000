@@ -17,6 +17,7 @@ from services.paparazzi_v3_scanner import (
     detect_v3_student_id,
     get_answer_bubble_centers_mm,
     get_student_id_bubble_centers_mm,
+    load_official_profile,
     load_v3_profile,
     preprocess_v3_image,
 )
@@ -174,7 +175,7 @@ def test_v3_detection_handles_rotation_and_perspective_from_original_pdf():
 def test_v3_detector_rejects_unrelated_or_incomplete_pages():
     profile = load_v3_profile()
     unrelated = np.full((800, 600, 3), 255, dtype=np.uint8)
-    with pytest.raises(ImageProcessingError, match="four V3 square registration marks"):
+    with pytest.raises(ImageProcessingError, match="four registration marks"):
         align_paparazzi_v3(unrelated, profile, question_count=20)
 
     cropped = _render_template(20)
@@ -230,7 +231,7 @@ def test_supplied_camera_capture_remains_rejected_when_v3_geometry_is_absent():
     image = cv2.imread(str(path), cv2.IMREAD_COLOR)
     assert image is not None
     assert image.shape[:2] == (1536, 2048)
-    detection = detect_v3_registration_markers(image)
+    detection = detect_v3_registration_markers(image, load_v3_profile())
     assert detection["geometry_valid"] is False
     with pytest.raises(ImageProcessingError):
         align_paparazzi_v3(image, load_v3_profile(), question_count=20)
@@ -251,6 +252,46 @@ def _render_user_large_bubble_50q(dpi=240):
     rgb = np.frombuffer(pixels.samples, dtype=np.uint8).reshape(pixels.height, pixels.width, pixels.n)
     source.close()
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+
+def _render_official_20q_big(dpi=240):
+    source = pymupdf.open(Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "official" / "Answer_Sheet_20Q_Big_Official.pdf")
+    pixels = source[0].get_pixmap(matrix=pymupdf.Matrix(dpi / 72, dpi / 72), alpha=False)
+    rgb = np.frombuffer(pixels.samples, dtype=np.uint8).reshape(pixels.height, pixels.width, pixels.n)
+    source.close()
+    return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+
+def test_official_20q_big_sheet_aligns_and_reads_its_large_bubbles():
+    image = _render_official_20q_big()
+    profile = load_official_profile(20)
+    assert profile["registration_marks"]["size_mm"] == pytest.approx(9.03, abs=0.02)
+    assert profile["answers"]["layouts"]["20"]["columns"] == 1
+    detection = detect_v3_registration_markers(image, profile)
+    assert detection["valid"] is True
+
+    pixels_per_mm_x = image.shape[1] / profile["paper"]["width_mm"]
+    pixels_per_mm_y = image.shape[0] / profile["paper"]["height_mm"]
+    id_centers = get_student_id_bubble_centers_mm(profile)
+    for column, digit in enumerate("1234567"):
+        x_mm, y_mm = id_centers[column][int(digit)]
+        radius = round(profile["student_id"]["bubble_radius_mm"] * min(pixels_per_mm_x, pixels_per_mm_y) * 0.78)
+        cv2.circle(image, (round(x_mm * pixels_per_mm_x), round(y_mm * pixels_per_mm_y)), radius, (15, 15, 15), -1)
+
+    expected = {number: "ABCDE"[(number - 1) % 5] for number in range(1, 21)}
+    answer_centers = get_answer_bubble_centers_mm(20, profile)
+    for number, answer in expected.items():
+        x_mm, y_mm = answer_centers[number]["ABCDE".index(answer)]
+        radius = round(profile["answers"]["bubble_radius_mm"] * min(pixels_per_mm_x, pixels_per_mm_y) * 0.78)
+        cv2.circle(image, (round(x_mm * pixels_per_mm_x), round(y_mm * pixels_per_mm_y)), radius, (15, 15, 15), -1)
+
+    aligned = align_paparazzi_v3(image, profile, question_count=20)
+    assert len(aligned.detected_marks) == 4
+    assert aligned.layout_score > 0.08
+    assert detect_v3_student_id(aligned.aligned_image, profile)["student_id"] == "1234567"
+    results = detect_v3_answers(aligned.aligned_image, 20, profile)
+    assert all(result["status"] == "detected" for result in results)
+    assert [result["answer"] for result in results] == list(expected.values())
 
 
 def test_user_large_bubble_50q_pdf_selects_its_profile_and_requires_id_review_when_blank():

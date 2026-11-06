@@ -2,10 +2,10 @@
 {% block title %}Automatic scanning{% endblock %}
 {% block content %}
 <div id="automatic-scanner" data-status-url="{{ url_for('automatic_scanning.status') }}" data-print-step-url="{{ url_for('automatic_scanning.print_step') }}" data-capture-step-url="{{ url_for('automatic_scanning.capture_step') }}">
-  <section class="card">
+  <section class="card scanner-overview">
     <p class="eyebrow">ESP32 CAMERA · PAPARAZZI CAPTURE QUEUE</p>
     <h1>Automatic scanning</h1>
-    <p class="text-muted">Each cycle initiates one blank A4 print, waits six seconds, captures and validates a high-resolution still, then requests the next page. Scanning stops when the same sheet is captured twice in a row.</p>
+    <p class="text-muted">One blank page is requested per cycle. Capture waits 16 seconds after the first print and 12 seconds after later prints. Automatic scanning stops when the same confidently read student ID appears twice in this session.</p>
     {% if migration_pending %}
     <div class="alert alert-warning">Automatic scanning storage is not installed. Review and apply Alembic migrations through <code>20261105_0012</code> before using camera polling. Manual image upload remains available.</div>
     {% else %}
@@ -32,7 +32,22 @@
     </div>
     {% endif %}
   </section>
-  <div class="alert alert-info" id="printer-feed-notice">The printer will receive one blank page per cycle. Six seconds after each print is initiated, Paparazzi captures the page and then requests the next blank page. A repeated capture ends the session.</div>
+  {% if not migration_pending %}
+  {% set clearable_captures = counts.get('QUEUED', 0) + counts.get('NEEDS_REVIEW', 0) + counts.get('COMPLETED', 0) + counts.get('FAILED', 0) %}
+  <section class="card" id="bulk-capture-actions">
+    <p class="eyebrow">BULK CAPTURE ACTIONS</p>
+    <h2>Save or delete captures together</h2>
+    <p class="small text-muted">Save opens one review for every capture awaiting review across all assessments. Review the IDs and answers, then save them together to Analytics. Delete removes queued and finished captures and unsubmitted drafts; saved grades are kept and items currently processing are skipped. Stop automatic scanning and camera polling before deleting.</p>
+    <div class="d-flex flex-wrap gap-2">
+      <a class="btn btn-primary" id="save-all-captures" href="{{ url_for('automatic_scanning.batch_review_all') }}">Save all captures to Analytics{% if all_pending_batch_count %} ({{ all_pending_batch_count }} ready){% endif %}</a>
+      <form method="post" action="{{ url_for('automatic_scanning.clear_queue') }}" onsubmit="return confirm('Delete all queued and finished captures and unsubmitted drafts? Submitted grades will be kept; captures currently processing will be skipped.');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-outline-danger" id="delete-all-captures" type="submit">Delete all queue captures</button>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+  <div class="alert alert-info" id="printer-feed-notice">The first capture waits 16 seconds after printing; later captures wait 12 seconds. A second confidently read instance of the same student ID ends the session. Distinct captures remain in the review queue.</div>
   <iframe id="printer-feed-job" title="One-page blank printer feed job" hidden></iframe>
   {% if not migration_pending %}
   <section class="card" id="camera-poller-panel">
@@ -130,7 +145,7 @@
       </div>
       <div class="col-md-3"><label class="form-check mb-2"><input class="form-check-input" type="checkbox" name="silent_print_configured" value="yes" required><span class="form-check-label">Silent printing is configured on this computer</span></label><button class="btn btn-primary w-100" type="submit">Start one-page scanning</button></div>
     </form>
-    <p class="small text-muted mt-2 mb-0">Load completed answer sheets in the printer tray. Paparazzi initiates one blank-page print, waits six seconds, takes a still, and repeats. The second consecutive capture of the same sheet is treated as the empty-feed signal and is not graded again.</p>
+    <p class="small text-muted mt-2 mb-0">Load completed answer sheets in the printer tray. Paparazzi waits 16 seconds after the first blank-page print for calibration, then waits 12 seconds after each later print before taking a still. The second consecutive capture of the same sheet is treated as the empty-feed signal and is not graded again.</p>
     <div class="d-flex gap-2 mt-3 flex-wrap">
       <form method="post" action="{{ url_for('automatic_scanning.pause') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-warning" {% if not control or not control.active or control.paused %}disabled{% endif %}>Pause</button></form>
       <form method="post" action="{{ url_for('automatic_scanning.resume') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-outline-success" {% if not control or not control.active or not control.paused %}disabled{% endif %}>Resume</button></form>
@@ -177,10 +192,36 @@
       <div class="stat-box"><span class="label">Pending / capacity limit</span><strong id="queue-capacity">{{ counts.get('capacity', 0) }} / {{ config.get('CAPTURE_QUEUE_CAPACITY', 25) }}</strong></div>
     </div>
   </section>
-  <section class="card"><h2>Recent captures</h2>
+  <section class="card">
+    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+      <div>
+        <h2>Recent captures</h2>
+        <p class="small text-muted mb-0">Use the bulk actions above to save all pending reviews or delete queued and finished captures together.</p>
+      </div>
+    </div>
     <div class="table-responsive"><table class="table"><thead><tr><th>Capture ID</th><th>Captured</th><th>Status</th><th>Student ID</th><th>Assessment result</th><th>Action / reason</th></tr></thead>
       <tbody id="recent-captures">
-      {% for job in jobs %}<tr><td><code>{{ job.capture_id }}</code></td><td>{{ job.captured_at.strftime('%Y-%m-%d %H:%M:%S UTC') if job.captured_at else '' }}</td><td>{{ job.status }}</td><td>{{ job.draft.detected_student_number if job.draft else job.submission.student.student_number if job.submission else '—' }}</td><td>{{ job.submission.score|string ~ '/' ~ job.submission.total_points|string if job.submission else '—' }}</td><td>{% if job.draft %}<a href="{{ url_for('scanning.review_v3_draft', draft_id=job.draft.id) }}">Review draft</a>{% elif job.status == 'FAILED' %}<form method="post" action="{{ url_for('automatic_scanning.retry_capture', job_id=job.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-primary">Retry</button></form><span class="text-danger">{{ job.error_message }}</span>{% elif job.submission %}<a href="{{ url_for('scanning.review_submission', submission_id=job.submission.id) }}">View result</a>{% endif %}</td></tr>
+      {% for job in jobs %}
+      <tr>
+        <td><code>{{ job.capture_id }}</code></td>
+        <td>{{ job.captured_at.strftime('%Y-%m-%d %H:%M:%S UTC') if job.captured_at else '' }}</td>
+        <td>{{ job.status }}</td>
+        <td>{{ job.draft.detected_student_number if job.draft else job.submission.student.student_number if job.submission else '—' }}</td>
+        <td>{{ job.submission.score|string ~ '/' ~ job.submission.total_points|string if job.submission else '—' }}</td>
+        <td>
+          {% if job.draft %}<a href="{{ url_for('scanning.review_v3_draft', draft_id=job.draft.id) }}">Review draft</a>
+          {% elif job.status == 'FAILED' %}
+          <form method="post" action="{{ url_for('automatic_scanning.retry_capture', job_id=job.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-sm btn-outline-primary">Retry</button></form>
+          <span class="text-danger">{{ job.error_message }}</span>
+          {% elif job.submission %}<a href="{{ url_for('scanning.review_submission', submission_id=job.submission.id) }}">View result</a>{% endif %}
+          {% if job.status not in ['QUEUED', 'PROCESSING'] %}
+          <form method="post" action="{{ url_for('automatic_scanning.delete_capture', job_id=job.id) }}" onsubmit="return confirm('Delete this recent capture? Any unsubmitted review draft and its images will be permanently removed. Submitted grades and evidence will be kept.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm btn-outline-danger mt-1" aria-label="Delete capture {{ job.capture_id }}">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
       {% else %}<tr><td colspan="6" class="text-muted">No camera captures have been queued.</td></tr>{% endfor %}
       </tbody>
     </table></div>
