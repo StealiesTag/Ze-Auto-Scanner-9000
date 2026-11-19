@@ -5,8 +5,7 @@ from decimal import Decimal, InvalidOperation
 from extensions import db
 from models import Assessment, Question
 
-SUPPORTED_ANSWER_SHEET_COUNTS = {20, 50}
-ASSESSMENT_QUESTION_LIMIT = max(SUPPORTED_ANSWER_SHEET_COUNTS)
+ASSESSMENT_QUESTION_LIMIT = 100
 
 
 def validate_assessment_payload(payload: dict) -> tuple[bool, list[str]]:
@@ -23,8 +22,6 @@ def validate_assessment_payload(payload: dict) -> tuple[bool, list[str]]:
         errors.append("Class or section is required.")
     if not questions:
         errors.append("At least one question is required.")
-    if len(questions) not in SUPPORTED_ANSWER_SHEET_COUNTS:
-        errors.append("Official answer sheets are available for assessments with exactly 20 or 50 questions.")
     if len(title) > 200 or len(subject) > 100 or len(class_section) > 100:
         errors.append("Assessment title, subject, or class section exceeds its allowed length.")
     if len(questions) > ASSESSMENT_QUESTION_LIMIT:
@@ -92,6 +89,7 @@ def update_assessment(assessment: Assessment, payload: dict) -> Assessment:
     assessment.class_section = payload["class_section"].strip()
     assessment.answer_sheet_version = "V4"
     assessment.questions.clear()
+    db.session.flush()
     assessment.questions.extend(
         Question(question_number=index, correct_answer=row["correct_answer"].strip().upper(),
                  points=Decimal(str(row.get("points", 1))), learning_objective=row["learning_objective"].strip(),

@@ -3,7 +3,7 @@
 {% block content %}
 <section class="card form-narrow">
   <p class="eyebrow">SCAN INTAKE</p><h1>Upload answer sheet</h1>
-  <p class="text-muted">Upload a full-page JPEG or PNG of a completed official Paparazzi answer sheet. Camera streaming is not required.</p>
+  <p class="text-muted">Upload a full-page JPEG or PNG of a completed Paparazzi answer sheet.</p>
   <form method="post" enctype="multipart/form-data" class="vstack gap-3" id="upload-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div><label class="form-label" for="assessment_id">Assessment and answer key</label>
@@ -11,7 +11,13 @@
         <option value="">Select assessment</option>
         {% for assessment in assessments %}<option value="{{ assessment.id }}" {% if selection.get('assessment_id') == assessment.id|string %}selected{% endif %}>{{ assessment.title }} ({{ assessment.questions|length }} questions)</option>{% endfor %}
       </select>
-      <div class="form-text">The scanner uses the assessment question count to select the matching official layout.</div>
+    </div>
+    <div><label class="form-label" for="sheet_layout">Printed sheet layout</label>
+      <select class="form-select" id="sheet_layout" name="sheet_layout">
+        {% for value, label in [('official', 'Official (20 or 50 questions)'), ('v3', 'Standard V3 (20, 50, or 100 questions)'), ('v3_large_50', 'V3 large bubbles (50 questions)')] %}
+        <option value="{{ value }}" {% if selection.get('sheet_layout', 'official') == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
     </div>
     <div><label class="form-label" for="student_id">Student if known</label>
       <select class="form-select" id="student_id" name="student_id">

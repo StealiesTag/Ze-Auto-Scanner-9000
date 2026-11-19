@@ -196,7 +196,7 @@ class MuseMarkerLocator:
 
 def configured_muse_locator(config: dict, profile: dict | None = None) -> MuseMarkerLocator | None:
     api_key = str(config.get("MUSE_API_KEY") or "").strip()
-    if not api_key:
+    if not api_key or not config.get("MUSE_ALLOW_SCAN_IMAGE_SHARING"):
         return None
     marks = (profile or {}).get("registration_marks", {})
     profile_key = (

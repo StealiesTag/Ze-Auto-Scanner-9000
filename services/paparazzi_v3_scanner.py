@@ -190,7 +190,14 @@ def preprocess_v3_image(image: np.ndarray) -> np.ndarray:
     corrected = gray
     if _env_bool("PAPARAZZI_V3_ILLUMINATION_CORRECTION", True):
         sigma = max(15.0, min(h, w) / 24.0)
-        background = cv2.GaussianBlur(corrected, (0, 0), sigmaX=sigma, sigmaY=sigma)
+        # The illumination field varies over many pixels. Estimate the field
+        # at lower resolution while keeping the marker and bubble pixels intact.
+        sample_width, sample_height = max(1, w // 4), max(1, h // 4)
+        sample = cv2.resize(gray, (sample_width, sample_height), interpolation=cv2.INTER_AREA)
+        background = cv2.GaussianBlur(
+            sample, (0, 0), sigmaX=sigma * sample_width / w, sigmaY=sigma * sample_height / h,
+        )
+        background = cv2.resize(background, (w, h), interpolation=cv2.INTER_LINEAR)
         corrected = cv2.divide(corrected, np.maximum(background, 1), scale=220)
     if _env_bool("PAPARAZZI_V3_CLAHE_ENABLED", True):
         clip_limit = _env_float("PAPARAZZI_V3_CLAHE_CLIP_LIMIT", 1.8, 0.1, 8.0)
@@ -463,7 +470,7 @@ def align_paparazzi_v3(
     ], dtype=np.float32).reshape(1, 4, 2)
     image_height, image_width = gray.shape
     margin_x, margin_y = max(8.0, image_width * 0.025), max(8.0, image_height * 0.025)
-    valid_page_projections = []
+    valid_shifts = []
     for shift in range(4):
         source = np.roll(ordered, -shift, axis=0).astype(np.float32)
         marker_to_image = cv2.getPerspectiveTransform(expected_mark_points, source)
@@ -476,8 +483,8 @@ def align_paparazzi_v3(
         )
         page_area_ratio = abs(cv2.contourArea(page_corners.astype(np.float32))) / float(image_width * image_height)
         if inside_frame and page_area_ratio >= 0.16:
-            valid_page_projections.append(page_area_ratio)
-    if not valid_page_projections:
+            valid_shifts.append(shift)
+    if not valid_shifts:
         raise ImageProcessingError(
             "The detected marks do not describe a full, visible answer sheet in the camera image. "
             "The alignment was rejected; keep the original capture and retake with the full sheet visible."
@@ -493,20 +500,20 @@ def align_paparazzi_v3(
     ], dtype=np.float32)
 
     orientations = []
-    for shift in range(4):
+    for shift in valid_shifts:
         source = np.roll(ordered, -shift, axis=0).astype(np.float32)
         transform = cv2.getPerspectiveTransform(source, target)
-        aligned = cv2.warpPerspective(image, transform, (output_width, output_height), borderValue=(255, 255, 255))
         normalized_aligned = cv2.warpPerspective(normalized_gray, transform, (output_width, output_height), borderValue=255)
         match_score = _layout_match_score(normalized_aligned, question_count, profile)
-        orientations.append((match_score, aligned, source, shift))
+        orientations.append((match_score, transform, source, shift))
     orientations.sort(key=lambda result: result[0], reverse=True)
-    match_score, aligned, source, shift = orientations[0]
+    match_score, transform, source, shift = orientations[0]
     if match_score < 0.08:
         raise ImageProcessingError("The sheet could not be oriented from its registration marks and printed bubble layout.")
     if len(orientations) > 1 and match_score - orientations[1][0] < 0.002:
         raise ImageProcessingError("The page orientation is ambiguous; rotate the image upright and retry.")
 
+    aligned = cv2.warpPerspective(image, transform, (output_width, output_height), borderValue=(255, 255, 255))
     debug = image.copy()
     for point in source:
         cv2.circle(debug, tuple(np.round(point).astype(int)), 8, (0, 120, 255), 2)

@@ -161,7 +161,7 @@ def test_v3_pdf_image_scan_stages_reviews_and_grades(app, tmp_path):
         cv2.circle(image, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), round(1.48 * pixels_per_mm * 0.70), (15, 15, 15), -1)
 
     app.config["UPLOAD_FOLDER"] = str(tmp_path)
-    draft = create_v3_scan_draft_from_image(image, app.config, assessment, question_count)
+    draft = create_v3_scan_draft_from_image(image, app.config, assessment, question_count, v3_variant="standard")
     assert draft.detected_student_number == student.student_number
     assert draft.student_id == student.id
     assert all(item["status"] == "detected" for item in draft.recognized_answers)

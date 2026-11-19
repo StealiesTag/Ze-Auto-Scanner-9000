@@ -37,6 +37,7 @@ def index():
                                 recommendation_threshold=current_app.config["RECOMMENDATION_ERROR_THRESHOLD"])
     ai_payload = ai_gaps = ai_hash = None
     ai_outputs = []
+    stale_ai_outputs = 0
     ai_storage_ready = assessment_id is None
     if assessment_id is not None:
         try:
@@ -47,6 +48,7 @@ def index():
                 TeachingInsight.assessment_id == assessment_id,
             ).order_by(TeachingInsight.updated_at.desc())).all()
             ai_outputs = [item for item in candidates if item.input_hash == output_fingerprint(ai_hash, item.kind, item.duration_minutes, item.selected_gaps)]
+            stale_ai_outputs = len(candidates) - len(ai_outputs)
             ai_storage_ready = True
         except ValueError:
             flash("The selected assessment could not be found.", "error")
@@ -57,6 +59,7 @@ def index():
     return render_template("analytics.html", analytics=analytics, assessments=assessments,
                            resources=resources, selected_assessment=assessment_id,
                            ai_payload=ai_payload, ai_gaps=ai_gaps, ai_hash=ai_hash, ai_outputs=ai_outputs,
+                           stale_ai_outputs=stale_ai_outputs,
                            ai_storage_ready=ai_storage_ready,
                            ai_configured=bool(current_app.config.get("AI_API_KEY") and current_app.config.get("AI_MODEL")))
 
@@ -76,6 +79,8 @@ def generate_ai_output():
         # Fail before an API request when the additive persistence migration is pending.
         db.session.scalars(select(TeachingInsight.id).limit(1)).first()
         payload = build_teaching_payload(assessment_id)
+        if not payload["assessment"]["finalized_submission_count"]:
+            raise TeachingAIUnavailable("Finalize at least one submission before generating teaching suggestions.")
         gaps = detect_learning_gaps(payload)
         base_hash = analytics_fingerprint(payload)
         selected_gaps = request.form.getlist("selected_gap") if kind == "remediation" else []

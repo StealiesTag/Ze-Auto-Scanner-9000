@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 import pymupdf
 import pytest
+from io import BytesIO
+from types import SimpleNamespace
 
 from services.paparazzi_v3_scanner import (
     CANONICAL_DPI,
@@ -26,6 +28,30 @@ from services.marker_detection import detect_v3_registration_markers
 
 ASSET_DIR = Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "v3" / "Paparazzi_Answer_Sheets_V3_Package"
 DPI = 240
+
+
+def test_manual_upload_routes_existing_100_question_assessment_to_v3(app, client, monkeypatch):
+    from extensions import db
+    from models import Assessment
+
+    assessment = Assessment(title="V3 intake", subject="Science", class_section="A", total_questions=100)
+    db.session.add(assessment)
+    db.session.commit()
+
+    def create_draft(_image, _config, selected_assessment, question_count, _student, *, v3_variant):
+        assert selected_assessment.id == assessment.id
+        assert question_count == 100
+        assert v3_variant == "standard"
+        return SimpleNamespace(id=42)
+
+    monkeypatch.setattr("routes.scanning_routes.create_v3_scan_draft", create_draft)
+    response = client.post("/scanning/upload", data={
+        "assessment_id": str(assessment.id),
+        "sheet_layout": "v3",
+        "answer_sheet": (BytesIO(b"synthetic upload"), "answer.png"),
+    })
+    assert response.status_code == 302
+    assert response.location.endswith("/v3-drafts/42")
 
 
 def _render_template(question_count: int) -> np.ndarray:

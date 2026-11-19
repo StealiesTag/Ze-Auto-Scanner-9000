@@ -11,6 +11,15 @@
   </div>
 </section>
 <section class="card">
+  <h2>Standard V3 sheets</h2>
+  <p>Choose Standard V3 when uploading scans of these sheets.</p>
+  <ul>
+    {% for count in (20, 50, 100) %}
+    <li><a href="{{ url_for('static', filename='answer_sheets/v3/Paparazzi_Answer_Sheets_V3_Package/Answer_Sheet_' ~ count ~ 'Q_V3.pdf') }}" download>Download {{ count }}-question V3 sheet</a></li>
+    {% endfor %}
+  </ul>
+</section>
+<section class="card">
   <h2>Printing</h2>
   <p class="mb-0">Print A4 portrait at 100% / Actual Size. Disable Fit to Page. Do not resize or crop the sheet.</p>
 </section>

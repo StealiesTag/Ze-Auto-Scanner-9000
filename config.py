@@ -35,6 +35,8 @@ class Config:
     CAMERA_MIN_MARKER_CONFIDENCE = float(os.getenv("CAMERA_MIN_MARKER_CONFIDENCE", "0.10"))
     CAMERA_AUTO_FINALIZE_MIN_CONFIDENCE = float(os.getenv("CAMERA_AUTO_FINALIZE_MIN_CONFIDENCE", "0.80"))
     MUSE_API_KEY = os.getenv("MUSE_API_KEY", "")
+    MUSE_ALLOW_SCAN_IMAGE_SHARING = os.getenv("MUSE_ALLOW_SCAN_IMAGE_SHARING", "").lower() in {"1", "true", "yes"}
+    AI_ALLOW_TEST_PDF_SHARING = os.getenv("AI_ALLOW_TEST_PDF_SHARING", "").lower() in {"1", "true", "yes"}
     MUSE_BASE_URL = os.getenv("MUSE_BASE_URL", "https://api.meta.ai/v1")
     MUSE_MODEL = os.getenv("MUSE_MODEL", "muse-spark-1.3")
     MUSE_TIMEOUT_SECONDS = float(os.getenv("MUSE_TIMEOUT_SECONDS", "12"))
@@ -51,6 +53,8 @@ class Config:
     MAX_ASSESSMENT_PDF_BYTES = int(os.getenv("MAX_ASSESSMENT_PDF_BYTES", str(20 * 1024 * 1024)))
     CANVAS_TOKEN_ENCRYPTION_KEY = os.getenv("CANVAS_TOKEN_ENCRYPTION_KEY", "")
     CAMERA_CONTROL_TOKEN = os.getenv("CAMERA_CONTROL_TOKEN", "")
+    PAPARAZZI_CAMERA_API_TOKEN = os.getenv("PAPARAZZI_CAMERA_API_TOKEN", "")
+    PAPARAZZI_TEACHER_PASSWORD = os.getenv("PAPARAZZI_TEACHER_PASSWORD", "")
     CAPTURE_QUEUE_CAPACITY = int(os.getenv("CAPTURE_QUEUE_CAPACITY", "25"))
     WTF_CSRF_ENABLED = True
 

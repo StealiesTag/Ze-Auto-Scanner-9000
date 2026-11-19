@@ -1,7 +1,8 @@
 from hmac import compare_digest
 from datetime import datetime, timezone
+from time import monotonic
 
-from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, send_from_directory, url_for
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -231,7 +232,7 @@ def _job_payload(job: CaptureJob) -> dict:
         "score": f"{submission.score}/{submission.total_points}" if submission else None,
         "error": job.error_message,
         "detection": job.detection_metadata or {},
-        "image_url": url_for("camera_api.capture_image", capture_id=job.capture_id),
+        "image_url": url_for("automatic_scanning.original_image", job_id=job.id),
         "review_url": url_for("scanning.review_v3_draft", draft_id=draft.id) if draft else None,
         "retry_url": url_for("automatic_scanning.retry_capture", job_id=job.id) if job.status == "FAILED" else None,
         "delete_url": url_for("automatic_scanning.delete_capture", job_id=job.id)
@@ -357,6 +358,7 @@ def print_step_started():
 @automatic_scanning_bp.route("/capture-step", methods=["POST"])
 def capture_step():
     control = get_scanner_control()
+    db.session.refresh(control, with_for_update=True)
     step = request.form.get("step", type=int)
     marker_state = dict(control.marker_status or {})
     current_step = int(marker_state.get("printer_step", 0))
@@ -394,7 +396,9 @@ def capture_step():
         camera_setup = get_camera_setup(current_app.config)
         ensure_queue_capacity(current_app.config)
         camera = ESP32Camera(camera_setup["stream_url"], camera_setup["capture_url"], camera_setup["timeout_seconds"])
+        capture_started = monotonic()
         image_bytes, extension = camera.capture_still()
+        current_app.logger.info("printer_step=%s still_request_seconds=%.3f", step, monotonic() - capture_started)
         import cv2
         import numpy as np
         frame = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -487,6 +491,7 @@ def capture_step():
 
         job = queue_image_bytes(
             image_bytes, extension, assessment.id, current_app.config,
+            commit=False,
             source="esp32", camera_id=camera_setup["camera_id"], detection_metadata={
                 **{key: value for key, value in detection.items() if key != "page_signature"},
                 "alignment_pending": not bool(detection.get("valid")),
@@ -516,6 +521,8 @@ def capture_step():
         db.session.rollback()
         control = get_scanner_control()
         control.paused = True
+        if isinstance(error, CameraError):
+            control.camera_connected = False
         control.state = "CAPTURE_ERROR"
         control.last_error = str(error)[:1000]
         db.session.commit()
@@ -528,6 +535,12 @@ def capture_step():
         control.last_error = f"Capture processing failed: {error}"[:1000]
         db.session.commit()
         return jsonify({"ok": False, "error": control.last_error}), 503
+
+
+@automatic_scanning_bp.get("/captures/<int:job_id>/image")
+def original_image(job_id):
+    job = db.get_or_404(CaptureJob, job_id)
+    return send_from_directory(current_app.config["UPLOAD_FOLDER"], job.image_filename, conditional=True)
 
 
 @automatic_scanning_bp.route("/status")

@@ -287,7 +287,10 @@ def validate_generated_output(kind: str, output: dict) -> dict:
         raise TeachingAIError("The AI provider returned an invalid output structure.")
     if kind == "insights":
         required = {"overall_summary": str, "demonstrated_understanding": list, "areas_needing_instruction": list, "notable_patterns": list, "learning_gaps": list, "teaching_recommendations": list}
-        for gap in output.get("learning_gaps", []):
+        learning_gaps = output.get("learning_gaps")
+        if not isinstance(learning_gaps, list):
+            raise TeachingAIError("The AI provider returned an invalid learning gap list.")
+        for gap in learning_gaps:
             if not isinstance(gap, dict) or not all(key in gap for key in ("question_numbers", "learning_objectives", "observed_evidence", "possible_interpretations", "common_incorrect_answers", "confidence_limitations")):
                 raise TeachingAIError("Each learning gap must distinguish observed evidence from possible interpretations and limitations.")
             if (not isinstance(gap["question_numbers"], list) or not isinstance(gap["learning_objectives"], list)
@@ -302,7 +305,8 @@ def validate_generated_output(kind: str, output: dict) -> dict:
             raise TeachingAIError("The generated lesson plan used an unsupported duration.")
     elif kind == "remediation":
         required = {"activities": list}
-        if any(not isinstance(item, dict) or not all(isinstance(item.get(field), str) and item[field].strip() for field in ("learning_objective", "prompt", "answer", "explanation")) for item in output.get("activities", [])):
+        activities = output.get("activities")
+        if not isinstance(activities, list) or any(not isinstance(item, dict) or not all(isinstance(item.get(field), str) and item[field].strip() for field in ("learning_objective", "prompt", "answer", "explanation")) for item in activities):
             raise TeachingAIError("The remediation activities must include objectives, prompts, answer keys, and explanations.")
     else:
         raise TeachingAIError("Unknown teaching suggestion type.")
@@ -329,7 +333,14 @@ def generate_teaching_output(kind: str, payload: dict, gaps: dict, config: dict,
         selected = set(selected_gaps)
         focused_gaps["gaps"] = [gap for gap in gaps.get("gaps", []) if gap.get("learning_objective") in selected][:gap_limit]
         focused_gaps["objective_performance"] = [item for item in gaps.get("objective_performance", []) if item.get("learning_objective") in selected][:gap_limit]
-    prompt = {"kind": kind, "analytics": payload, "deterministic_learning_gaps": focused_gaps, "duration_minutes": duration, "selected_learning_gaps": selected_gaps or []}
+    analytics = payload
+    if not config.get("AI_ALLOW_TEST_PDF_SHARING"):
+        analytics = {key: value for key, value in payload.items() if key != "original_test_pdf"}
+        analytics["questions"] = [
+            {key: value for key, value in question.items() if key != "original_pdf_mapping"}
+            for question in payload["questions"]
+        ]
+    prompt = {"kind": kind, "analytics": analytics, "deterministic_learning_gaps": focused_gaps, "duration_minutes": duration, "selected_learning_gaps": selected_gaps or []}
     output = validate_generated_output(kind, _request_llm(prompt, config))
     if kind == "lesson" and output["duration_minutes"] != duration:
         raise TeachingAIError("The generated lesson plan duration does not match your selection.")

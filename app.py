@@ -1,7 +1,8 @@
 import os
 import threading
+from hmac import compare_digest
 
-from flask import Flask, render_template
+from flask import Flask, Response as HTTPResponse, render_template, request
 from sqlalchemy.engine import make_url
 
 from config import config
@@ -25,6 +26,27 @@ def create_app(config_name: str = "default") -> Flask:
 
     db.init_app(app)
     migrate.init_app(app, db)
+
+    @app.before_request
+    def authenticate_teacher():
+        if request.blueprint == "camera_api":
+            return None
+        password = app.config["PAPARAZZI_TEACHER_PASSWORD"]
+        if not password:
+            if request.remote_addr in {"127.0.0.1", "::1"}:
+                return None
+            return HTTPResponse("Teacher access requires a configured password.", status=403)
+        credentials = request.authorization
+        if (
+            credentials and credentials.type == "basic" and credentials.username == "teacher"
+            and compare_digest((credentials.password or "").encode(), password.encode())
+        ):
+            return None
+        return HTTPResponse(
+            "Sign in to Paparazzi.", status=401,
+            headers={"WWW-Authenticate": 'Basic realm="Paparazzi", charset="UTF-8"'},
+        )
+
     csrf.init_app(app)
 
     from routes import register_blueprints

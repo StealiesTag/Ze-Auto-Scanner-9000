@@ -7,6 +7,28 @@ from models import Assessment, Question, Response, Student, Submission, Teaching
 from services import teaching_insights_service as ai
 
 
+@pytest.mark.parametrize(("kind", "field"), [("insights", "learning_gaps"), ("remediation", "activities")])
+def test_ai_rejects_invalid_nested_list(kind, field):
+    with pytest.raises(ai.TeachingAIError):
+        ai.validate_generated_output(kind, {field: None})
+
+
+def test_ai_excludes_pdf_content_without_explicit_sharing(monkeypatch):
+    def mock_provider(prompt, config):
+        assert "original_test_pdf" not in prompt["analytics"]
+        assert "original_pdf_mapping" not in prompt["analytics"]["questions"][0]
+        assert prompt["analytics"]["questions"][0]["learning_objective"] == "Compare fractions"
+        raise ai.TeachingAIError("mock complete")
+
+    monkeypatch.setattr(ai, "_request_llm", mock_provider)
+    payload = {
+        "original_test_pdf": {"extracted_text": "private text"},
+        "questions": [{"learning_objective": "Compare fractions", "original_pdf_mapping": {"question_excerpt": "private excerpt"}}],
+    }
+    with pytest.raises(ai.TeachingAIError, match="mock complete"):
+        ai.generate_teaching_output("lesson", payload, {}, {}, duration=30)
+
+
 @pytest.fixture
 def analytics_fixture(app):
     assessment = Assessment(title="Fractions checkpoint", subject="Math", class_section="7B", total_questions=2)

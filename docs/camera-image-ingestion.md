@@ -12,6 +12,8 @@ Downgrade removes per-camera counters/state and capture validation metadata. Its
 
 `POST /api/camera/ingest`
 
+Set `PAPARAZZI_CAMERA_API_TOKEN` on the server and send it as an `Authorization: Bearer` header on every camera API request. The in-process poller uses the shared ingestion service directly. For browser access outside the host computer, set `PAPARAZZI_TEACHER_PASSWORD`, use username `teacher`, and serve the app through HTTPS. Configure the password whenever a reverse proxy fronts the app.
+
 Send one JPEG or PNG either as multipart form data (`image` or `file`) or as raw bytes. Multipart fields or headers may provide:
 
 | Metadata | Multipart / form field | Header | Behavior |
@@ -31,7 +33,7 @@ python -m services.scan_worker
 Example multipart request:
 
 ```powershell
-curl.exe -F "camera_id=bench-camera" -F "capture_id=bench-0001" -F "image=@filled-sheet.png;type=image/png" http://127.0.0.1:5000/api/camera/ingest
+curl.exe -H "Authorization: Bearer $env:PAPARAZZI_CAMERA_API_TOKEN" -F "camera_id=bench-camera" -F "capture_id=bench-0001" -F "image=@filled-sheet.png;type=image/png" http://127.0.0.1:5000/api/camera/ingest
 ```
 
 Or use the included Python uploader:

@@ -1,6 +1,7 @@
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -29,6 +30,7 @@ from services.paparazzi_v3_scanner import (
     _profile_mark_centers,
     get_answer_bubble_centers_mm,
     get_student_id_bubble_centers_mm,
+    load_official_profile,
     load_v3_profile,
 )
 
@@ -57,6 +59,38 @@ def _detection(signature=None, *, valid=True, bottom=True, xshift=0.0):
         } if valid else {},
         "page_signature": signature or [0] * 1440,
     }
+
+
+def test_camera_gap_requires_new_replacement_evidence():
+    machine = CaptureStateMachine(stable_frames=2, disappearance_frames=2)
+    machine.seed_locked("previous", [0] * 1440)
+    missing = _detection(valid=False, bottom=False)
+    machine.observe(missing)
+    machine.observe(missing)
+    assert machine.state == CaptureState.WAITING_FOR_NEW_SHEET
+    machine.observation_interrupted()
+    assert machine.state == CaptureState.LOCKED
+    assert machine.current_capture_id == "previous"
+    assert not _stabilize(machine, [1] * 1440)
+    machine.observe(missing)
+    machine.observe(missing)
+    assert _stabilize(machine, [1] * 1440)
+
+
+def test_camera_api_authenticates_before_reading_image():
+    from flask import Flask
+    from routes.camera_api_routes import camera_api_bp
+
+    application = Flask(__name__)
+    application.config["PAPARAZZI_CAMERA_API_TOKEN"] = ""
+    application.register_blueprint(camera_api_bp)
+    client = application.test_client()
+    assert client.get("/api/camera/status").status_code == 503
+    application.config["PAPARAZZI_CAMERA_API_TOKEN"] = "test-camera-token"
+    assert client.get("/api/camera/captures/example/image").status_code == 401
+    assert client.post("/api/camera/ingest").status_code == 401
+    authenticated = client.post("/api/camera/ingest", headers={"Authorization": "Bearer test-camera-token"})
+    assert authenticated.get_json()["reason"] == "empty_image"
 
 
 def _stabilize(machine, signature, *, shift=0.0):
@@ -255,6 +289,20 @@ def test_queue_preserves_order_and_producer_can_enqueue_while_first_job_is_proce
     assert get_queue_counts()["PROCESSING"] == 2
 
 
+def test_conflicting_capture_id_preserves_queued_original(app, capture_assessment, tmp_path):
+    from sqlalchemy.exc import IntegrityError
+
+    app.config["UPLOAD_FOLDER"] = str(tmp_path)
+    payload = _blank_png()
+    assessment_id = capture_assessment.id
+    first = queue_image_bytes(payload, ".png", assessment_id, app.config, capture_id="same-id")
+    original = tmp_path / first.image_filename
+    with pytest.raises(IntegrityError):
+        queue_image_bytes(payload, ".png", assessment_id, app.config, capture_id="same-id")
+    assert original.read_bytes() == payload
+    assert list(tmp_path.iterdir()) == [original]
+
+
 def test_queue_capacity_is_enforced_without_losing_an_image(app, capture_assessment, tmp_path):
     app.config["UPLOAD_FOLDER"] = str(tmp_path)
     app.config["CAPTURE_QUEUE_CAPACITY"] = 1
@@ -313,7 +361,8 @@ def test_worker_failure_retry_and_interrupted_recovery_are_idempotent(app, captu
     assert job.status == "QUEUED"
 
 
-def test_capture_job_runs_the_existing_v3_draft_and_grading_pipeline(app, tmp_path):
+@pytest.mark.parametrize("student_section", ["AUTO", "OTHER"])
+def test_capture_job_runs_the_official_draft_and_grading_pipeline(app, tmp_path, student_section):
     app.config["UPLOAD_FOLDER"] = str(tmp_path)
     answers = ["ABCDE"[(number - 1) % 5] for number in range(1, 21)]
     assessment = Assessment(title="Queued V3 scan", subject="Science", class_section="AUTO", total_questions=20)
@@ -321,28 +370,35 @@ def test_capture_job_runs_the_existing_v3_draft_and_grading_pipeline(app, tmp_pa
         Question(question_number=number, prompt=f"Question {number}", option_a="A", option_b="B", option_c="C", option_d="D", option_e="E", correct_answer=answer, points=1, learning_objective="Queue integration")
         for number, answer in enumerate(answers, 1)
     ]
-    student = Student(student_number="1234567", name="Queue Integration Learner", class_section="AUTO")
+    student = Student(student_number="1234567", name="Queue Integration Learner", class_section=student_section)
     db.session.add_all([assessment, student])
     db.session.commit()
 
-    pix = pymupdf.open(ASSET_DIR / "Answer_Sheet_20Q_V3.pdf")[0].get_pixmap(matrix=pymupdf.Matrix(240 / 72, 240 / 72), alpha=False)
+    official_pdf = ASSET_DIR.parents[1] / "official" / "Answer_Sheet_20Q_Big_Official.pdf"
+    pix = pymupdf.open(official_pdf)[0].get_pixmap(matrix=pymupdf.Matrix(240 / 72, 240 / 72), alpha=False)
     rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     page = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    profile = load_v3_profile()
+    profile = load_official_profile(20)
     pixels_per_mm = 240 / 25.4
     id_centers = get_student_id_bubble_centers_mm(profile)
     for column, digit in enumerate(student.student_number):
         x_mm, y_mm = id_centers[column][int(digit)]
-        cv2.circle(page, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), round(1.12 * pixels_per_mm * 0.72), (15, 15, 15), -1)
+        cv2.circle(page, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), round(profile["student_id"]["bubble_radius_mm"] * pixels_per_mm * 0.72), (15, 15, 15), -1)
     answer_centers = get_answer_bubble_centers_mm(20, profile)
     for question, answer in enumerate(answers, 1):
         x_mm, y_mm = answer_centers[question]["ABCDE".index(answer)]
-        cv2.circle(page, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), round(1.48 * pixels_per_mm * 0.70), (15, 15, 15), -1)
+        cv2.circle(page, (round(x_mm * pixels_per_mm), round(y_mm * pixels_per_mm)), round(profile["answers"]["bubble_radius_mm"] * pixels_per_mm * 0.70), (15, 15, 15), -1)
     success, encoded = cv2.imencode(".png", page)
     assert success
     job = queue_image_bytes(encoded.tobytes(), ".png", assessment.id, app.config, capture_id="6" * 32)
     claimed = claim_next_job()
     processed = process_job(claimed.id, app.config)
+    if student_section != assessment.class_section:
+        assert processed.status == "NEEDS_REVIEW"
+        assert processed.submission_id is None
+        assert processed.draft.detected_student_number == student.student_number
+        assert processed.draft.processing_notes["matched_student_class_mismatch"] is True
+        return
     assert processed.status == "COMPLETED"
     submission = processed.submission
     db.session.refresh(job)
@@ -407,7 +463,7 @@ def test_start_pause_and_resume_controls_are_persisted(app, monkeypatch):
     client = app.test_client()
     monkeypatch.setattr("routes.automatic_scanning_routes.ESP32Camera.read_frame", lambda _camera: np.zeros((480, 640, 3), dtype=np.uint8))
     monkeypatch.setattr("routes.automatic_scanning_routes.ESP32Camera.close_stream", lambda _camera: None)
-    started = client.post("/scanning/automatic/start", data={"assessment_id": assessment.id})
+    started = client.post("/scanning/automatic/start", data={"assessment_id": assessment.id, "silent_print_configured": "yes"})
     assert started.status_code == 302
     status = client.get("/scanning/automatic/status").get_json()
     assert status["active"] is True and status["paused"] is False
@@ -481,7 +537,7 @@ def test_camera_ingest_rejects_invalid_image_and_does_not_create_job(app, client
     app.config["UPLOAD_FOLDER"] = str(tmp_path)
     _api_assessment()
     image = _blank_png()
-    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_: _api_validation(None, valid=False))
+    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_, **_kwargs: _api_validation(None, valid=False))
     response = client.post("/api/camera/ingest", data=image, content_type="image/png", headers={"X-Camera-ID": "test-camera"})
     assert response.status_code == 200
     assert response.get_json()["status"] == "rejected"
@@ -502,7 +558,7 @@ def test_camera_ingest_persists_replacement_state_and_queues_one_per_sheet(app, 
     next_image = next_encoded.tobytes()
     first_signature, next_signature = [0] * 1440, [1] * 1440
 
-    def validate(payload, *_):
+    def validate(payload, *_, **_kwargs):
         return _api_validation(first_signature if payload == image else next_signature)
 
     monkeypatch.setattr("services.camera_ingestion.validate_camera_image", validate)
@@ -520,7 +576,7 @@ def test_camera_ingest_persists_replacement_state_and_queues_one_per_sheet(app, 
     assert ingest("frame-3").get_json()["status"] == "duplicate"
     assert ingest("same-sheet").get_json()["status"] == "duplicate"
 
-    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_: _api_validation(None, valid=False))
+    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_, **_kwargs: _api_validation(None, valid=False))
     assert ingest("obscured-1").get_json()["status"] == "rejected"
     assert ingest("obscured-2").get_json()["status"] == "rejected"
     monkeypatch.setattr("services.camera_ingestion.validate_camera_image", validate)
@@ -569,7 +625,7 @@ def test_camera_ingest_supports_multipart_and_missing_optional_metadata(app, cli
     app.config["CAMERA_STABLE_FRAME_COUNT"] = 2
     _api_assessment()
     image = _blank_png()
-    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_: _api_validation([0] * 1440))
+    monkeypatch.setattr("services.camera_ingestion.validate_camera_image", lambda *_, **_kwargs: _api_validation([0] * 1440))
     responses = [
         client.post("/api/camera/ingest", data={"image": (BytesIO(image), "page.png")}, content_type="multipart/form-data")
         for _ in range(3)
@@ -726,17 +782,18 @@ def test_camera_poller_respects_poll_interval_and_shuts_down_gracefully(app, mon
     event = StopAfterOneWait()
     poller = CameraPoller(app, opener=lambda *_a, **_kw: None, stop_event=event)
     monkeypatch.setattr(poller, "poll_once", lambda: {"status": "deferred"})
+    monkeypatch.setattr("services.camera_poller.time", SimpleNamespace(monotonic=lambda: 10.0))
     poller.run()
     assert event.waits == [pytest.approx(0.75, abs=0.01)]
     assert db.session.get(CameraIngestionState, "interval-test-camera").poller_running is False
 
 
 def test_second_poller_cannot_acquire_the_same_camera_lock(app):
-    from services.camera_poller import CameraPoller
+    from services.camera_poller import POLLER_LOCK_KEY, CameraPoller
 
     app.config["PAPARAZZI_CAMERA_URL"] = "http://192.168.1.73/capture"
     app.config["PAPARAZZI_CAMERA_ID"] = "locked-camera"
-    lock_key = "paparazzi-camera-poller:locked-camera"
+    lock_key = POLLER_LOCK_KEY
     lock_owner = db.engines[None].engine.connect()
     acquired = lock_owner.scalar(text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"), {"lock_key": lock_key})
     assert acquired is True

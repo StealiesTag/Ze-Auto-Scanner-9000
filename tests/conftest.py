@@ -4,6 +4,12 @@ import pytest
 from sqlalchemy.engine import make_url
 
 from app import create_app, db
+from config import config
+
+
+@pytest.fixture(autouse=True)
+def disable_embedded_worker_for_tests(monkeypatch):
+    monkeypatch.setattr(config["default"], "AUTO_START_SCAN_WORKER", False)
 
 
 @pytest.fixture
@@ -23,6 +29,7 @@ def app():
             pytest.fail("TEST_DATABASE_URL must not point to the configured development database.")
 
     app = create_app("testing")
+    app.config.update(PAPARAZZI_CAMERA_API_TOKEN="test-camera-token", PAPARAZZI_TEACHER_PASSWORD="")
     with app.app_context():
         db.create_all()
         engine = db.engine
@@ -45,4 +52,6 @@ def app():
 
 @pytest.fixture
 def client(app):
-    return app.test_client()
+    client = app.test_client()
+    client.environ_base["HTTP_AUTHORIZATION"] = "Bearer test-camera-token"
+    return client

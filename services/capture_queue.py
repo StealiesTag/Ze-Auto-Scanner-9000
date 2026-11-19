@@ -1,8 +1,10 @@
 """Durable PostgreSQL queue shared by ESP32 captures and the single consumer."""
 from __future__ import annotations
 
-import uuid
+import logging
+import os
 import re
+import uuid
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -21,6 +23,7 @@ from services.paparazzi_v3_submission_service import confirm_v3_scan_draft, crea
 PENDING_STATUSES = ("QUEUED", "PROCESSING")
 _CAPTURE_CAPACITY_LOCK = 711304
 _WORKER_LOCK = 711305
+logger = logging.getLogger(__name__)
 
 
 class QueueFullError(RuntimeError):
@@ -39,11 +42,11 @@ def get_scanner_control() -> ScannerControl:
 def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, app_config: dict, *, source: str = "esp32", capture_id: str | None = None, camera_id: str | None = None, captured_at: datetime | None = None, detection_metadata: dict | None = None, commit: bool = True) -> CaptureJob:
     if source not in {"esp32", "manual", "api"} or extension not in {".jpg", ".jpeg", ".png"}:
         raise ValueError("Invalid capture source or image type.")
-    image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if image is None or image.shape[0] < 400 or image.shape[1] < 400 or max(image.shape[:2]) > int(app_config["MAX_IMAGE_DIMENSION"]):
-        raise ImageProcessingError("Capture must be a valid full-page image within the configured dimension limit.")
     if len(image_bytes) > int(app_config["MAX_CONTENT_LENGTH"]):
         raise ImageProcessingError("The captured image exceeds the configured upload size limit.")
+    image = cv2.imdecode(np.frombuffer(image_bytes, dtype=np.uint8), cv2.IMREAD_COLOR) if image_bytes else None
+    if image is None or image.shape[0] < 400 or image.shape[1] < 400 or max(image.shape[:2]) > int(app_config["MAX_IMAGE_DIMENSION"]):
+        raise ImageProcessingError("Capture must be a valid full-page image within the configured dimension limit.")
     assessment = db.session.get(Assessment, assessment_id)
     if assessment is None or assessment.total_questions not in {20, 50}:
         raise ValueError("Select an existing 20- or 50-question assessment.")
@@ -52,11 +55,8 @@ def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, ap
         raise ValueError("Capture identifiers may contain 1-64 letters, digits, hyphens, or underscores.")
     folder = Path(app_config["UPLOAD_FOLDER"]).resolve()
     folder.mkdir(parents=True, exist_ok=True)
-    filename = f"capture-{capture_id}{extension}"
+    filename = f"capture-{uuid.uuid4().hex}{extension}"
     path = folder / filename
-    if path.exists():
-        raise ValueError("This capture identifier already has an image.")
-    path.write_bytes(image_bytes)
     try:
         # Serialize capacity checks across the producer and manual-capture endpoint.
         db.session.execute(text("SELECT pg_advisory_xact_lock(:capture_lock)"), {"capture_lock": _CAPTURE_CAPACITY_LOCK})
@@ -69,12 +69,21 @@ def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, ap
             captured_at=captured_at, detection_metadata=detection_metadata or {},
         )
         db.session.add(job)
+        db.session.flush()
+        with path.open("xb") as original:
+            try:
+                original.write(image_bytes)
+                original.flush()
+                os.fsync(original.fileno())
+            except OSError:
+                original.close()
+                path.unlink(missing_ok=True)
+                raise
         if commit:
             db.session.commit()
         return job
     except Exception:
         db.session.rollback()
-        path.unlink(missing_ok=True)
         raise
 
 
@@ -112,10 +121,12 @@ def claim_next_job() -> CaptureJob | None:
     job = db.session.get(CaptureJob, job_id)
     job.status = "PROCESSING"
     job.started_at = datetime.now(timezone.utc)
+    queue_wait = max(0.0, (job.started_at - job.updated_at).total_seconds())
     job.completed_at = None
     job.retry_count += 1
     job.error_message = None
     db.session.commit()
+    logger.info("capture_id=%s queue_wait_seconds=%.3f", job.capture_id, queue_wait)
     return job
 
 
@@ -165,6 +176,7 @@ def process_job(job_id: int, app_config: dict) -> CaptureJob:
         minimum_confidence = float(app_config.get("CAMERA_AUTO_FINALIZE_MIN_CONFIDENCE", 0.80))
         can_auto_finalize = bool(
             student
+            and student.class_section == assessment.class_section
             and student_id_detection.get("status") == "detected"
             and student_id_detection.get("student_id") == student.student_number
             and float(student_id_detection.get("confidence") or 0.0) >= minimum_confidence
@@ -195,11 +207,13 @@ def process_job(job_id: int, app_config: dict) -> CaptureJob:
     except Exception as error:
         db.session.rollback()
         job = db.session.get(CaptureJob, job_id)
-        if job is not None:
+        if job is not None and job.status == "PROCESSING":
             job.status = "FAILED"
             job.error_message = str(error)[:4000]
             job.completed_at = datetime.now(timezone.utc)
             db.session.commit()
+            return job
+        if job is not None and job.status == "COMPLETED":
             return job
         raise
 

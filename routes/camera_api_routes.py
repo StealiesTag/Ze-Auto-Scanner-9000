@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from hmac import compare_digest
 
 from flask import Blueprint, current_app, jsonify, request, send_from_directory, url_for
 from sqlalchemy import func, select
@@ -19,6 +20,17 @@ csrf.exempt(camera_api_bp)
 
 def _error(reason: str, message: str, status: int):
     return jsonify(success=False, status="error", reason=reason, message=message), status
+
+
+@camera_api_bp.before_request
+def authenticate_camera_request():
+    token = current_app.config["PAPARAZZI_CAMERA_API_TOKEN"]
+    if not token:
+        return _error("camera_api_disabled", "Camera API access is disabled.", 503)
+    supplied = request.headers.get("Authorization", "")
+    if not compare_digest(supplied.encode(), f"Bearer {token}".encode()):
+        return _error("unauthorized", "A valid camera API token is required.", 401)
+    return None
 
 
 @camera_api_bp.post("/ingest")

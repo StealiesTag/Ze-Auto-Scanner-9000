@@ -68,6 +68,13 @@ class CaptureStateMachine:
     def seed_waiting_for_first_sheet(self) -> None:
         self.state = CaptureState.WAITING_FOR_FIRST_SHEET
 
+    def observation_interrupted(self) -> None:
+        """Reset partial replacement evidence after a gap in camera observations."""
+        self.bottom_missing_count = 0
+        self._reset_stability()
+        if self.state not in {CaptureState.PAUSED, CaptureState.ERROR}:
+            self.state = CaptureState.LOCKED if self.completed_capture_count else CaptureState.WAITING_FOR_FIRST_SHEET
+
     def to_dict(self) -> dict:
         """Return JSON-safe state so API observations survive process restarts."""
         return {

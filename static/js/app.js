@@ -10,11 +10,11 @@ document.addEventListener('DOMContentLoaded', () => {
         row.querySelector('legend').textContent = `Question ${index + 1}`;
         row.querySelector('.remove-question').disabled = rows.length === 1;
       });
-  addQuestionButton.disabled = rows.length >= 50;
+  addQuestionButton.disabled = rows.length >= 100;
     };
 
     addQuestionButton.addEventListener('click', () => {
-    if (questionList.querySelectorAll('.question-editor').length >= 50) return;
+    if (questionList.querySelectorAll('.question-editor').length >= 100) return;
       questionList.append(questionTemplate.content.cloneNode(true));
       updateQuestionControls();
       questionList.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -359,9 +359,10 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (_error) {
         setText('camera-connected', 'Disconnected');
         setText('camera-error', 'Could not retrieve scanner status. Check the app and database connection.');
+      } finally {
+        window.setTimeout(pollScanner, 2000);
       }
     };
     pollScanner();
-    window.setInterval(pollScanner, 2000);
   }
 });

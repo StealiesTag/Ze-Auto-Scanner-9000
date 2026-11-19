@@ -51,11 +51,11 @@
   {% if not selected_assessment %}
     <p class="text-muted">Select an assessment above to review its privacy-conscious class summary and request suggestions.</p>
   {% elif ai_payload %}
-    <p>AI suggestions are generated only when requested and are clearly separate from deterministic analytics. Student names and IDs are not included. If an original test PDF is attached, its extracted question text is included in the request to help explain missed questions. The teacher reviews all generated materials before use.</p>
+    <p>Generate suggestions from finalized class results, question text, and learning objectives. Review the suggestions before using them. {% if config.get('AI_ALLOW_TEST_PDF_SHARING') %}Extracted text from attached test PDFs can also be shared with the provider. Upload only approved, blank assessment materials.{% endif %}</p>
     <div class="alert {{ 'alert-success' if ai_configured and ai_storage_ready else 'alert-secondary' }}">
       {% if not ai_storage_ready %}Teaching-suggestion storage migration is pending. Existing analytics remain available; generation is disabled until migration 20261101_0003 is applied.{% else %}
       {% if ai_configured %}AI provider configured. Requests are sent only after you choose Generate.{% else %}AI provider unavailable. Configure <code>AI_API_KEY</code> and <code>AI_MODEL</code> to enable generation. Analytics and learning-gap detection remain available.{% endif %}
-      {% if ai_payload.assessment.finalized_submission_count == 0 %} No finalized submissions are available, so recommendations will be limited.{% endif %}
+      {% if ai_payload.assessment.finalized_submission_count == 0 %} Finalize at least one submission to generate suggestions.{% endif %}
       {% endif %}
     </div>
     <h3 class="h5">Deterministic learning-gap signals</h3>
@@ -68,10 +68,11 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="assessment_id" value="{{ selected_assessment }}"><input type="hidden" name="kind" value="{{ kind }}">
         {% if kind == 'lesson' %}<label class="form-label" for="lesson-duration">Lesson duration</label><select class="form-select mb-2" id="lesson-duration" name="duration_minutes"><option>15</option><option selected>30</option><option>45</option><option>60</option></select>{% endif %}
         {% if kind == 'remediation' %}<label class="form-label" for="selected-gaps">Focus objectives (optional)</label><select class="form-select mb-2" id="selected-gaps" name="selected_gap" multiple>{% for gap in ai_gaps.gaps if gap.learning_objective %}<option value="{{ gap.learning_objective }}">{{ gap.learning_objective }}</option>{% endfor %}</select><div class="form-text mb-2">Leave blank to include the highest-priority gaps.</div>{% endif %}
-        <button class="btn btn-primary mt-auto" {% if not ai_configured %}disabled{% endif %}>{{ label }}</button>
+        <button class="btn btn-primary mt-auto" {% if not ai_configured or not ai_payload.assessment.finalized_submission_count %}disabled{% endif %}>{{ label }}</button>
       </form></div>
       {% endfor %}
     </div>{% endif %}
+    {% if stale_ai_outputs %}<p class="alert alert-warning mt-3">Assessment results or question details have changed. Generate new suggestions for the current results. Earlier suggestions remain saved.</p>{% endif %}
     {% for item in ai_outputs %}
     <div class="border rounded p-3 mt-3"><h3 class="h5">{{ {'insights':'AI Teaching Insights','lesson':'AI Lesson Plan','remediation':'AI Remediation Activities'}[item.kind] }}{% if item.teacher_saved %} <span class="badge text-bg-success">Teacher saved</span>{% else %} <span class="badge text-bg-info">Suggestion</span>{% endif %}</h3>
       {% if item.kind == 'insights' %}<form method="post" action="{{ url_for('analytics.generate_ai_output') }}" class="mb-2"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="assessment_id" value="{{ selected_assessment }}"><input type="hidden" name="kind" value="insights"><input type="hidden" name="regenerate" value="yes"><button class="btn btn-outline-secondary btn-sm">Regenerate insights</button></form>{% endif %}

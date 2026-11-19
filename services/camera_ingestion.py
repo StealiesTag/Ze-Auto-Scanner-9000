@@ -4,7 +4,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 
 from flask import current_app
 from sqlalchemy import select, text
@@ -73,6 +72,11 @@ def record_poller_state(
     if malformed_frame:
         state.received_count += 1
         state.rejected_count += 1
+    if connection_status in {"disconnected", "stopped"} or malformed_frame:
+        machine = configured_machine()
+        machine.restore(state.controller_state)
+        machine.observation_interrupted()
+        state.controller_state = machine.to_dict()
     db.session.commit()
 
 
@@ -111,11 +115,15 @@ def ingest_camera_image_bytes(
             camera_state.rejected_count += 1
             machine = configured_machine()
             machine.restore(camera_state.controller_state)
-            machine.observe({
-                "valid": False, "markers_visible": False, "geometry_valid": False,
-                "sheet_sufficiently_visible": False, "bottom_markers_visible": False,
-                "marker_coordinates": {},
-            })
+            if validation.get("reason") in {
+                "unsupported_content_type", "empty_image", "image_too_large",
+                "invalid_image", "corrupted_image", "invalid_dimensions",
+            }:
+                machine.observation_interrupted()
+            else:
+                machine.observe({
+                    "valid": False, "bottom_markers_visible": validation["bottom_markers_visible"],
+                })
             camera_state.controller_state = machine.to_dict()
             db.session.commit()
             return IngestionResult({
@@ -174,7 +182,6 @@ def ingest_camera_image_bytes(
             "bottom_markers_visible": validation["bottom_markers_visible"],
             "locator_source": validation.get("locator_source"),
         }
-        queued_file = Path(current_app.config["UPLOAD_FOLDER"]).resolve() / f"capture-{capture_id}{validation['extension']}"
         try:
             job = queue_image_bytes(
                 image_bytes, validation["extension"], assessment.id, current_app.config,
@@ -187,7 +194,6 @@ def ingest_camera_image_bytes(
             db.session.commit()
         except Exception:
             db.session.rollback()
-            queued_file.unlink(missing_ok=True)
             raise
         return IngestionResult({
             "success": True, "status": "queued", "capture_id": job.capture_id,

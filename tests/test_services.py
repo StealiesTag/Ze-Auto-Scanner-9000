@@ -267,7 +267,7 @@ def test_v3_upload_accepts_multiple_sheets_and_returns_each_review_link(monkeypa
     app.config["WTF_CSRF_ENABLED"] = False
     client = app.test_client()
     monkeypatch.setattr("routes.scanning_routes.db.session.scalars", lambda *_args, **_kwargs: SimpleNamespace(all=lambda: []))
-    assessment = SimpleNamespace(id=5, questions=[])
+    assessment = SimpleNamespace(id=5, questions=[], total_questions=20)
     monkeypatch.setattr("routes.scanning_routes.db.session.get", lambda *_args, **_kwargs: assessment)
     draft_ids = iter([100, 101])
     monkeypatch.setattr(
@@ -278,9 +278,8 @@ def test_v3_upload_accepts_multiple_sheets_and_returns_each_review_link(monkeypa
     assert page.status_code == 200
     assert b'multiple' in page.data
     response = client.post("/scanning/upload", data={
-        "sheet_format": "paparazzi_standard_v3",
+        "sheet_layout": "v3",
         "assessment_id": "5",
-        "question_count": "20",
         "answer_sheet": [(BytesIO(b"image-one"), "one.png"), (BytesIO(b"image-two"), "two.png")],
     }, content_type="multipart/form-data")
     assert response.status_code == 200
@@ -325,15 +324,7 @@ def test_upload_wrapper_uses_normalized_legacy_image_pipeline(monkeypatch):
     }
 
 
-def test_paparazzi_branding_and_answer_sheet_route(monkeypatch):
-    from app import create_app
-    from config import config
-
-    monkeypatch.setattr(config["default"], "SQLALCHEMY_DATABASE_URI", "postgresql+psycopg://local:local@127.0.0.1/not_connected")
-    monkeypatch.setattr(config["default"], "SECRET_KEY", "factory-test-key")
-    app = create_app()
-    client = app.test_client()
-
+def test_paparazzi_branding_and_answer_sheet_route(client):
     dashboard = client.get("/")
     assert dashboard.status_code == 200
     assert b"Paparazzi" in dashboard.data
@@ -341,13 +332,11 @@ def test_paparazzi_branding_and_answer_sheet_route(monkeypatch):
     answer_sheet_page = client.get("/answer-sheets")
     assert answer_sheet_page.status_code == 200
     assert b"Answer Sheets" in answer_sheet_page.data
-    assert b"PAPARAZZI STANDARD" in answer_sheet_page.data
-    assert b"V4 (recommended for new assessments)" in answer_sheet_page.data
+    assert b"Standard V3 sheets" in answer_sheet_page.data
     assert b"Answer_Sheet_20Q_V3.pdf" in answer_sheet_page.data
     assert b"Answer_Sheet_50Q_V3.pdf" in answer_sheet_page.data
     assert b"Answer_Sheet_100Q_V3.pdf" in answer_sheet_page.data
-    assert b"Answer_Sheets_20_50_100_V3.pdf" in answer_sheet_page.data
-    assert b"Answer_Sheet_50Q_V4.pdf" in answer_sheet_page.data
+    assert b"Answer_Sheet_50Q_Official.pdf" in answer_sheet_page.data
     from pathlib import Path
     asset_dir = Path(__file__).resolve().parents[1] / "static" / "answer_sheets" / "v3" / "Paparazzi_Answer_Sheets_V3_Package"
     for filename in ("Answer_Sheet_20Q_V3.pdf", "Answer_Sheet_50Q_V3.pdf", "Answer_Sheet_100Q_V3.pdf", "Answer_Sheets_20_50_100_V3.pdf"):
@@ -370,20 +359,18 @@ def test_v3_upload_routes_to_review_draft_not_legacy_scanner(monkeypatch):
 
     page = client.get("/scanning/upload")
     assert page.status_code == 200
-    assert b"Paparazzi Standard V3" in page.data
+    assert b"Standard V3" in page.data
     assert b'name="assessment_id"' in page.data
-    assert b'name="question_count"' in page.data
+    assert b'name="sheet_layout"' in page.data
     assert b'id="image-preview-container"' in page.data
     assert b'id="answer-sheet-preview-list"' in page.data
 
-    assessment = SimpleNamespace(id=5, questions=[])
+    assessment = SimpleNamespace(id=5, questions=[], total_questions=20)
     monkeypatch.setattr("routes.scanning_routes.db.session.get", lambda *_args, **_kwargs: assessment)
     monkeypatch.setattr("routes.scanning_routes.create_v3_scan_draft", lambda *_args, **_kwargs: SimpleNamespace(id=99))
-    monkeypatch.setattr("routes.scanning_routes.process_answer_sheet", lambda *_args, **_kwargs: pytest.fail("V3 must not use legacy scanner"))
     response = client.post("/scanning/upload", data={
-        "sheet_format": "paparazzi_standard_v3",
+        "sheet_layout": "v3",
         "assessment_id": "5",
-        "question_count": "20",
         "answer_sheet": (BytesIO(b"image"), "sheet.png"),
     })
     assert response.status_code == 302

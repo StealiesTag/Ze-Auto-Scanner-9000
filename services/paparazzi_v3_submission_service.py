@@ -13,6 +13,7 @@ from services.image_processor import ImageProcessingError, load_uploaded_image
 from services.paparazzi_v3_scanner import (
     align_paparazzi_v3,
     load_official_profile,
+    load_v3_profile,
     detect_v3_answers,
     detect_v3_student_id,
 )
@@ -29,18 +30,21 @@ def _save_image(folder: Path, image, name: str) -> str:
     return name
 
 
-def create_v3_scan_draft(file_storage, app_config, assessment: Assessment, question_count: int, selected_student_id=None, *, capture_id=None, original_filename=None) -> ScanDraft:
+def create_v3_scan_draft(file_storage, app_config, assessment: Assessment, question_count: int, selected_student_id=None, *, capture_id=None, original_filename=None, v3_variant=None) -> ScanDraft:
     image, _metadata = load_uploaded_image(
         file_storage,
         max_bytes=int(app_config["MAX_CONTENT_LENGTH"]),
         max_dimension=int(app_config["MAX_IMAGE_DIMENSION"]),
     )
-    return create_v3_scan_draft_from_image(image, app_config, assessment, question_count, selected_student_id, capture_id=capture_id, original_filename=original_filename)
+    return create_v3_scan_draft_from_image(image, app_config, assessment, question_count, selected_student_id, capture_id=capture_id, original_filename=original_filename, v3_variant=v3_variant)
 
 
-def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, question_count: int, selected_student_id=None, *, capture_id=None, original_filename=None) -> ScanDraft:
-    if question_count not in SUPPORTED_OFFICIAL_QUESTION_COUNTS:
+def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, question_count: int, selected_student_id=None, *, capture_id=None, original_filename=None, v3_variant=None) -> ScanDraft:
+    if v3_variant is None and question_count not in SUPPORTED_OFFICIAL_QUESTION_COUNTS:
         raise ValueError("Choose an official 20- or 50-question Paparazzi sheet.")
+    if v3_variant is not None:
+        if question_count not in {20, 50, 100} or (v3_variant == "50q_large_bubble" and question_count != 50):
+            raise ValueError("Choose a V3 layout that matches the assessment question count.")
     questions = sorted(assessment.questions, key=lambda question: question.question_number)
     if len(questions) != question_count or [question.question_number for question in questions] != list(range(1, question_count + 1)):
         raise ValueError("The selected official answer-sheet question count must match the assessment answer key exactly.")
@@ -48,10 +52,12 @@ def create_v3_scan_draft_from_image(image, app_config, assessment: Assessment, q
         raise ValueError("The answer key contains an invalid answer choice.")
 
     marker_confidence = float(app_config.get("CAMERA_MIN_MARKER_CONFIDENCE", 0.10))
-    profile = load_official_profile(question_count)
+    profile = load_official_profile(question_count) if v3_variant is None else load_v3_profile(v3_variant)
     try:
         alignment = align_paparazzi_v3(image, profile, question_count=question_count, min_marker_confidence=marker_confidence)
     except ImageProcessingError as local_error:
+        if v3_variant is not None:
+            raise
         local_markers = detect_v3_registration_markers(
             image,
             min_page_area_ratio=float(app_config.get("CAMERA_MIN_PAGE_AREA_RATIO", 0.25)),
@@ -144,6 +150,9 @@ def confirm_v3_scan_draft(draft: ScanDraft, student: Student, final_answers: lis
     from services.grading_service import grade_detections
     from models import AnswerCorrection, CaptureJob, Response, Submission
 
+    draft = db.session.scalar(select(ScanDraft).where(ScanDraft.id == draft.id).with_for_update())
+    if draft is None:
+        raise ValueError("This sheet has already been finalized or is no longer available.")
     assessment = draft.assessment
     questions = sorted(assessment.questions, key=lambda question: question.question_number)
     exact_detected_id_match = (

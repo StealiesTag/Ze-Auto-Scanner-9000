@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -17,6 +18,9 @@ def main() -> int:
     parser.add_argument("--camera-id", default="local-test-camera")
     parser.add_argument("--capture-id", default=None)
     args = parser.parse_args()
+    token = os.getenv("PAPARAZZI_CAMERA_API_TOKEN")
+    if not token:
+        parser.error("Set PAPARAZZI_CAMERA_API_TOKEN before calling the camera API.")
 
     if not args.image.is_file():
         parser.error(f"Image does not exist: {args.image}")
@@ -42,7 +46,11 @@ def main() -> int:
     ))
     request = Request(
         args.url, data=b"".join(parts), method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}", "Accept": "application/json"},
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
     )
     try:
         with urlopen(request, timeout=30) as response:

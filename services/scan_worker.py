@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import signal
 import threading
+from time import monotonic
 
 from sqlalchemy import select
 
@@ -28,9 +29,12 @@ def _consumer_loop(app, stop_event: threading.Event) -> None:
             with app.app_context():
                 job = claim_next_job()
                 if job is not None:
-                    logger.info("Processing capture %s", job.capture_id)
+                    started = monotonic()
                     result = process_job(job.id, app.config)
-                    logger.info("Capture %s processing status: %s", result.capture_id, result.status)
+                    logger.info(
+                        "capture_id=%s status=%s processing_seconds=%.3f",
+                        result.capture_id, result.status, monotonic() - started,
+                    )
         except Exception:
             logger.exception("Processing worker iteration failed")
             with app.app_context():

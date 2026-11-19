@@ -11,14 +11,13 @@
       <div class="col-md-4"><label class="form-label">Title</label><input class="form-control" name="title" maxlength="200" required value="{{ assessment.title if assessment else '' }}"></div>
       <div class="col-md-2"><label class="form-label">Subject</label><input class="form-control" name="subject" maxlength="100" required value="{{ assessment.subject if assessment else '' }}"></div>
       <div class="col-md-3"><label class="form-label">Class / section</label><input class="form-control" name="class_section" maxlength="100" required value="{{ assessment.class_section if assessment else '' }}"></div>
-      <div class="col-md-3"><label class="form-label">Answer sheet</label><div class="form-control-plaintext fw-semibold">Official sheet chosen from question count (20 or 50)</div></div>
     </div>
     <div class="mb-4"><label class="form-label" for="source-pdf">Original test PDF (optional)</label>
       <input class="form-control" id="source-pdf" name="source_pdf" type="file" accept="application/pdf,.pdf" {% if not assessment %}required{% endif %}>
       <div class="form-text">Required for a new assessment. Selectable text is extracted so teaching suggestions can explain missed questions. Scanned PDFs need OCR first. Upload a replacement to update the source.{% if assessment and assessment.source_pdf_filename %} Current file: {{ assessment.source_pdf_filename }}{% endif %}</div>
     </div>
     <div class="d-flex justify-content-between align-items-center mb-2"><h2>Questions</h2><button class="btn btn-outline-primary" type="button" id="add-question">Add question</button></div>
-    <p class="form-text">Scanning supports assessments with exactly 20 or 50 questions. Add or remove questions until the answer key matches one of those counts.</p>
+    <p class="form-text">Use 20 or 50 questions for automatic scanning. For manual V3 uploads, use 20, 50, or 100 questions.</p>
     <div id="question-list">
       {% for question in questions %}
       <fieldset class="question-editor">

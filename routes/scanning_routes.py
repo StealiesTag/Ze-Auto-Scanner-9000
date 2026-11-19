@@ -17,7 +17,7 @@ def _upload_context(selection):
         select(Submission).where(Submission.review_status == "required").order_by(Submission.submitted_at.desc())
     ).all()
     assessments = db.session.scalars(
-        select(Assessment).where(Assessment.total_questions.in_((20, 50))).order_by(Assessment.title)
+        select(Assessment).where(Assessment.total_questions.in_((20, 50, 100))).order_by(Assessment.title)
     ).all()
     students = db.session.scalars(select(Student).order_by(Student.name)).all()
     drafts = db.session.scalars(select(ScanDraft).order_by(ScanDraft.created_at.desc())).all()
@@ -33,19 +33,22 @@ def upload_page():
         else:
             assessment_id = request.form.get("assessment_id", type=int)
             assessment = db.session.get(Assessment, assessment_id) if assessment_id else None
+            layout = request.form.get("sheet_layout", "official")
+            layout_options = {"official": None, "v3": "standard", "v3_large_50": "50q_large_bubble"}
             if assessment is None:
                 flash("Select the assessment whose answer key matches this sheet.", "error")
-            elif assessment.answer_sheet_version != "V4":
-                flash("This assessment is not configured for an official answer sheet. Edit and save it before scanning.", "error")
-            elif assessment.total_questions not in {20, 50}:
+            elif layout not in layout_options:
+                flash("Choose a supported answer sheet layout.", "error")
+            elif layout == "official" and assessment.total_questions not in {20, 50}:
                 flash("Choose an assessment with exactly 20 or 50 questions for an official sheet.", "error")
             else:
                 question_count = assessment.total_questions
                 selected_student_id = request.form.get("student_id", type=int)
+                scanner_options = {"v3_variant": layout_options[layout]} if layout_options[layout] else {}
                 if len(uploads) == 1:
                     try:
                         draft = create_v3_scan_draft(
-                            uploads[0], current_app.config, assessment, question_count, selected_student_id
+                            uploads[0], current_app.config, assessment, question_count, selected_student_id, **scanner_options
                         )
                         flash("Sheet detected. Review the student ID and every answer before grading.", "success")
                         return redirect(url_for("scanning.review_v3_draft", draft_id=draft.id))
@@ -56,7 +59,7 @@ def upload_page():
                     for upload in uploads:
                         try:
                             draft = create_v3_scan_draft(
-                                upload, current_app.config, assessment, question_count, selected_student_id
+                                upload, current_app.config, assessment, question_count, selected_student_id, **scanner_options
                             )
                             batch_results.append({
                                 "filename": upload.filename,

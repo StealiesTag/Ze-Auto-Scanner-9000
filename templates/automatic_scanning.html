@@ -11,7 +11,8 @@
     {% else %}
     <div class="row g-3">
       <div class="col-lg-8">
-        {% if stream_url %}<img class="img-fluid border rounded w-100" id="esp32-preview" src="{{ stream_url }}" alt="ESP32 live MJPEG camera preview">
+        {% if stream_url %}<p><a href="{{ stream_url }}" target="_blank" rel="noopener noreferrer">Open camera preview</a></p>
+        <p class="small text-muted">Close the preview tab before scanning so the camera can serve still images.</p>
         {% else %}<div class="alert alert-secondary">Set <code>ESP32_STREAM_URL</code> to show the camera preview.</div>{% endif %}
       </div>
       <div class="col-lg-4">
@@ -93,7 +94,7 @@
   </section>
   <section class="card">
     <h2>One-time ESP32 setup</h2>
-    <p class="small text-muted">Save the local camera address once. The live MJPEG feed is only a preview; scanning reads still images from the ESP32 capture URL so it does not compete with the preview stream.</p>
+    <p class="small text-muted">Save the local camera address once. Scanning uses still images from the ESP32 capture URL.</p>
     <form method="post" action="{{ url_for('automatic_scanning.update_camera_setup') }}" class="row g-2 align-items-end">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="col-lg-2"><label class="form-label" for="setup-camera-id">Camera ID</label><input class="form-control" id="setup-camera-id" name="camera_id" maxlength="100" value="{{ camera_setup.camera_id }}" required></div>
