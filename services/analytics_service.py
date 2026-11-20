@@ -138,6 +138,19 @@ def build_analytics(assessment_id: int | None = None, recommendation_threshold: 
         }
         resources = db.session.scalars(select(LearningResource).order_by(LearningResource.title)).all()
         recommendations = recommend_learning_objectives(objective_stats, resources, recommendation_threshold)
+        objective_performance = sorted(
+            [
+                {
+                    "objective": objective,
+                    "valid_responses": stats["valid_responses"],
+                    "incorrect": stats["incorrect"],
+                    "error_rate": stats["incorrect"] / stats["valid_responses"],
+                }
+                for objective, stats in objective_stats.items()
+                if stats["valid_responses"]
+            ],
+            key=lambda item: (-item["error_rate"], -item["valid_responses"], item["objective"] or ""),
+        )
         pending_filter = [Submission.review_status == "required"]
         if assessment_id is not None:
             pending_filter.append(Submission.assessment_id == assessment_id)
@@ -163,6 +176,7 @@ def build_analytics(assessment_id: int | None = None, recommendation_threshold: 
                 key=lambda row: (row["accuracy"], -row["valid_responses"]),
             ),
             "objectives": objective_stats,
+            "objective_performance": objective_performance,
             "recommendations": recommendations,
             "recommendation_threshold": recommendation_threshold,
             "awaiting_review": int(unresolved_count),
@@ -181,6 +195,7 @@ def build_analytics(assessment_id: int | None = None, recommendation_threshold: 
             "questions": [],
             "most_missed": [],
             "objectives": {},
+            "objective_performance": [],
             "recommendations": [],
             "recommendation_threshold": recommendation_threshold,
             "awaiting_review": 0,

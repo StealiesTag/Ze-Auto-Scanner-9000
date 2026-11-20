@@ -183,6 +183,16 @@ textarea.form-control { min-height: 88px; }
 .distribution-row > span:last-child { width: 28px; text-align: right; font-variant-numeric: tabular-nums; }
 .progress { height: 7px; overflow: hidden; background: #e8e9e1; border-radius: 0; }
 .progress-bar { background: var(--forest); }
+.analytics-chart h2 { margin-bottom: 0.35rem; }
+.chart-row { margin-top: 1rem; }
+.chart-label { display: flex; justify-content: space-between; gap: 0.8rem; margin-bottom: 0.28rem; font-size: 0.86rem; }
+.chart-label span { min-width: 0; overflow-wrap: anywhere; }
+.chart-label strong { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.chart-track { height: 9px; overflow: hidden; background: #e8e9e1; border-left: 1px solid var(--line-strong); }
+.chart-fill { display: block; height: 100%; min-width: 2px; background: var(--forest); }
+.chart-fill-low { background: var(--signal); }
+.chart-fill-gap { background: #a77a2a; }
+.chart-caption { display: block; margin-top: 0.22rem; color: var(--muted); font-size: 0.76rem; font-variant-numeric: tabular-nums; }
 .recommendation-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.85rem 0; border-top: 1px solid var(--line); }
 .resource-link { display: inline-block; margin: 0.2rem; padding: 0.25rem 0.45rem; border: 1px solid #bccbc0; border-radius: 2px; color: var(--forest); text-decoration: none; font-size: 0.85rem; }
 .resource-link:hover { color: #173d31; background: #edf1e9; }

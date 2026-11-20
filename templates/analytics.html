@@ -20,6 +20,26 @@
     {% for item in analytics.most_missed[:8] %}<tr><td>{{ item.assessment_title }} · Q{{ item.question_number }}</td><td>{{ '%.1f'|format(item.accuracy * 100) }}%</td><td>{{ item.valid_responses }}</td></tr>{% else %}<tr><td colspan="3" class="text-muted">No valid response data yet.</td></tr>{% endfor %}
   </tbody></table></div></div></section>
 </div>
+<div class="row g-3 mt-1">
+  <section class="col-lg-7"><div class="card h-100 analytics-chart">
+    <p class="eyebrow">QUESTION PERFORMANCE</p><h2>Lowest accuracy questions</h2>
+    <p class="small text-muted">Correct answers as a share of valid responses. Showing up to 10 questions with the most room for review.</p>
+    {% for item in analytics.most_missed[:10] %}<div class="chart-row">
+      <div class="chart-label"><span>{{ item.assessment_title }} · Q{{ item.question_number }}</span><strong>{{ '%.0f'|format(item.accuracy * 100) }}%</strong></div>
+      <div class="chart-track" role="img" aria-label="{{ item.assessment_title }}, question {{ item.question_number }}: {{ '%.1f'|format(item.accuracy * 100) }} percent correct from {{ item.valid_responses }} valid responses"><span class="chart-fill {{ 'chart-fill-low' if item.accuracy < (1 - analytics.recommendation_threshold) else '' }}" style="width: {{ item.accuracy * 100 }}%"></span></div>
+      <span class="chart-caption">{{ item.correct }} correct · {{ item.incorrect }} incorrect · {{ item.blank }} blank · {{ item.valid_responses }} valid</span>
+    </div>{% else %}<p class="text-muted mb-0">Question charts appear after finalized answers are available.</p>{% endfor %}
+  </div></section>
+  <section class="col-lg-5"><div class="card h-100 analytics-chart">
+    <p class="eyebrow">CLASS LEARNING GAPS</p><h2>Incorrect rate by objective</h2>
+    <p class="small text-muted">Objectives with the highest incorrect-response share appear first.</p>
+    {% for item in analytics.objective_performance[:8] %}<div class="chart-row">
+      <div class="chart-label"><span>{{ item.objective or 'Objective not specified' }}</span><strong>{{ '%.0f'|format(item.error_rate * 100) }}%</strong></div>
+      <div class="chart-track" role="img" aria-label="{{ item.objective or 'Objective not specified' }}: {{ '%.1f'|format(item.error_rate * 100) }} percent incorrect from {{ item.valid_responses }} valid responses"><span class="chart-fill chart-fill-gap" style="width: {{ item.error_rate * 100 }}%"></span></div>
+      <span class="chart-caption">{{ item.incorrect }} incorrect of {{ item.valid_responses }} valid responses</span>
+    </div>{% else %}<p class="text-muted mb-0">Objective charts appear after finalized answers with objective metadata are available.</p>{% endfor %}
+  </div></section>
+</div>
 <section class="card mt-3"><h2>Question results</h2><div class="table-responsive"><table class="table"><thead><tr><th>Assessment</th><th>Question</th><th>Correct rate</th><th>Valid responses</th><th>Correct</th><th>Incorrect</th><th>Blank</th><th>Choices A-E</th></tr></thead><tbody>
   {% for item in analytics.questions %}<tr><td>{{ item.assessment_title }}</td><td>Q{{ item.question_number }}</td><td>{{ '%.1f'|format(item.accuracy * 100) if item.accuracy is not none else '—' }}%</td><td>{{ item.valid_responses }}</td><td>{{ item.correct }}</td><td>{{ item.incorrect }}</td><td>{{ item.blank }}</td><td>{% for option in ['A','B','C','D','E'] %}<span class="me-2">{{ option }}: {{ item.answer_distribution[option] }}</span>{% endfor %}</td></tr>
   {% else %}<tr><td colspan="8" class="text-muted">No questions match this filter.</td></tr>{% endfor %}
