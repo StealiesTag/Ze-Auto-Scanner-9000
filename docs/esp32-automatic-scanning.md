@@ -27,9 +27,9 @@ The browser preview uses the configured MJPEG URL. The first one-page scan step 
 
 ## Start and operate
 
-1. Back up the PostgreSQL database, inspect the Alembic revision and migration history, then apply revisions through `20261105_0012`. This includes AI suggestions, scanner control/queue, saved camera setup/session progress, PDF mapping, and Canvas sync schema.
+1. The local SQLite install creates the current model schema on first launch. For an existing PostgreSQL install, back up the database, inspect its Alembic revision, and apply migrations through `20261105_0013` before scanning.
 2. Start the Flask app on localhost and save the camera ID, stream/still URLs, and timeout once under **Automatic scanning**. Only literal private/local IP camera addresses are accepted.
-3. The Flask app starts the queue consumer automatically. A PostgreSQL session advisory lock prevents duplicate consumers. To manage the worker separately, set `AUTO_START_SCAN_WORKER=false` and run `python -m services.scan_worker` in one terminal.
+3. The Flask app starts the queue consumer automatically. PostgreSQL uses a session advisory lock; the local SQLite install uses a lock file to prevent duplicate consumers. To manage the worker separately, set `AUTO_START_SCAN_WORKER=false` and run `python -m services.scan_worker` in one terminal.
 4. Configure silent printing once on the scanning computer. Chrome can use the `--kiosk-printing` launch switch; Edge uses the managed `SilentPrintingEnabled` policy. The scanning page includes setup instructions and requires confirmation before starting. Select an assessment with a complete 20- or 50-question A-E key, then load completed sheets in the printer tray and start. The first cycle waits 16 seconds after the blank A4 print; later cycles wait 12 seconds before requesting a still. The image is queued before the browser prints the next page.
 5. Inspect processed images under **Recent captures**. The consumer uses the selected official sheet profile, reads the student ID and answers, and creates a normal scan draft. High-confidence, fully matched readings can be graded automatically; other scans remain drafts for teacher review. The teacher can correct any uncertain fields before grading.
 

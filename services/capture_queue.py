@@ -11,12 +11,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from flask import current_app
 from sqlalchemy import func, select, text
 from werkzeug.datastructures import FileStorage
 
 from extensions import db
 from models import Assessment, CaptureJob, ScanDraft, ScannerControl, Student
 from services.image_processor import ImageProcessingError
+from services.local_process_lock import LocalProcessLock, acquire_local_process_lock, release_local_process_lock
 from services.paparazzi_v3_submission_service import confirm_v3_scan_draft, create_v3_scan_draft
 
 
@@ -59,7 +61,8 @@ def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, ap
     path = folder / filename
     try:
         # Serialize capacity checks across the producer and manual-capture endpoint.
-        db.session.execute(text("SELECT pg_advisory_xact_lock(:capture_lock)"), {"capture_lock": _CAPTURE_CAPACITY_LOCK})
+        if db.engine.dialect.name == "postgresql":
+            db.session.execute(text("SELECT pg_advisory_xact_lock(:capture_lock)"), {"capture_lock": _CAPTURE_CAPACITY_LOCK})
         pending = db.session.scalar(select(func.count(CaptureJob.id)).where(CaptureJob.status.in_(PENDING_STATUSES))) or 0
         if pending >= int(app_config["CAPTURE_QUEUE_CAPACITY"]):
             raise QueueFullError("The capture queue is full. Automatic capture was paused; process queued sheets before resuming.")
@@ -89,7 +92,8 @@ def queue_image_bytes(image_bytes: bytes, extension: str, assessment_id: int, ap
 
 def ensure_queue_capacity(app_config: dict) -> None:
     """Reserve the capacity lock before doing a physical still capture."""
-    db.session.execute(text("SELECT pg_advisory_xact_lock(:capture_lock)"), {"capture_lock": _CAPTURE_CAPACITY_LOCK})
+    if db.engine.dialect.name == "postgresql":
+        db.session.execute(text("SELECT pg_advisory_xact_lock(:capture_lock)"), {"capture_lock": _CAPTURE_CAPACITY_LOCK})
     pending = db.session.scalar(select(func.count(CaptureJob.id)).where(CaptureJob.status.in_(PENDING_STATUSES))) or 0
     if pending >= int(app_config["CAPTURE_QUEUE_CAPACITY"]):
         db.session.rollback()
@@ -121,7 +125,10 @@ def claim_next_job() -> CaptureJob | None:
     job = db.session.get(CaptureJob, job_id)
     job.status = "PROCESSING"
     job.started_at = datetime.now(timezone.utc)
-    queue_wait = max(0.0, (job.started_at - job.updated_at).total_seconds())
+    updated_at = job.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    queue_wait = max(0.0, (job.started_at - updated_at).total_seconds())
     job.completed_at = None
     job.retry_count += 1
     job.error_message = None
@@ -330,7 +337,9 @@ def clear_capture_queue(upload_folder: str | Path) -> dict:
 
 
 def acquire_worker_lock():
-    """Hold one PostgreSQL session advisory lock for this entire daemon lifetime."""
+    """Hold a process-local SQLite lock or PostgreSQL session lock for the worker."""
+    if db.engine.dialect.name == "sqlite":
+        return acquire_local_process_lock(Path(current_app.instance_path) / "scan_worker.lock")
     connection = db.engine.connect()
     acquired = connection.scalar(select(func.pg_try_advisory_lock(_WORKER_LOCK)))
     if not acquired:
@@ -341,6 +350,9 @@ def acquire_worker_lock():
 
 def release_worker_lock(connection) -> None:
     if connection is not None:
+        if isinstance(connection, LocalProcessLock):
+            release_local_process_lock(connection)
+            return
         try:
             connection.execute(select(func.pg_advisory_unlock(_WORKER_LOCK)))
         finally:

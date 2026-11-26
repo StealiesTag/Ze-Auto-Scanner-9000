@@ -5,6 +5,10 @@ __pycache__/
 .env
 venv/
 .venv/
+instance/
+paparazzi.db
+paparazzi.db-shm
+paparazzi.db-wal
 uploads/
 backups/
 *.log

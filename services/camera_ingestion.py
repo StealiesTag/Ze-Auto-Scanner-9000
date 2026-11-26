@@ -34,10 +34,11 @@ def configured_machine() -> CaptureStateMachine:
 
 
 def lock_camera_state(camera_id: str) -> CameraIngestionState:
-    db.session.execute(
-        text("SELECT pg_advisory_xact_lock(hashtextextended(:camera_key, 0))"),
-        {"camera_key": f"paparazzi-camera:{camera_id}"},
-    )
+    if db.engine.dialect.name == "postgresql":
+        db.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:camera_key, 0))"),
+            {"camera_key": f"paparazzi-camera:{camera_id}"},
+        )
     state = db.session.execute(
         select(CameraIngestionState).where(CameraIngestionState.camera_id == camera_id).with_for_update()
     ).scalar_one_or_none()

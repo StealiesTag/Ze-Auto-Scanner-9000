@@ -49,7 +49,7 @@ def run_scan_worker(app=None, stop_event: threading.Event | None = None) -> None
     with app.app_context():
         lock_connection = acquire_worker_lock()
         if lock_connection is None:
-            raise RuntimeError("Another Paparazzi scan worker already holds the PostgreSQL worker lock.")
+            raise RuntimeError("Another Paparazzi scan worker already holds the worker lock.")
         try:
             get_scanner_control()
             recovered = recover_interrupted_jobs()

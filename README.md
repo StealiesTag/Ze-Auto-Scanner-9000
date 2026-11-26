@@ -2,9 +2,23 @@
 
 This project is a modular Flask application for automated answer-sheet scanning, grading, analytics, and learning-resource recommendations. It is intentionally structured so each concern lives in a separate layer: routes, database models, services, templates, and static assets.
 
+## Quick start for Windows teachers
+
+You do not need PostgreSQL, a `.env` file, or a separate database service.
+
+1. On GitHub, choose **Code → Download ZIP**, then extract the ZIP to a normal folder.
+2. Install Python 3.11 or newer if it is not already installed.
+3. Double-click `start_paparazzi.bat`.
+
+On first launch, the script installs the app packages and starts Paparazzi in your browser. The app creates its local database automatically in `instance/paparazzi.db` and keeps uploaded scans in `uploads/`. Keep the console window open while using Paparazzi. First launch needs an internet connection to download packages; later launches use the installed copy. If package requirements change after an app update, delete `.venv/.paparazzi_packages_ready` and launch again.
+
+AI suggestions and Canvas grade sync are optional integrations; they may need separate keys or accounts. Manual sheet scanning and local grading do not require Canvas or an AI key. ESP32 firmware can use the Wi-Fi setup network printed on its camera label, then **Automatic scanning → Find camera on Wi-Fi** saves the camera address. A camera builder must flash the board-specific firmware once; teachers do not edit the sketch or enter Wi-Fi details in Arduino. Silent printer control still requires the one-time browser setup described on the scanning page. Keep the downloaded app folder and its `instance/` and `uploads/` folders together to preserve class data and scans.
+
+The default one-computer setup uses SQLite. Setting `DATABASE_URL` explicitly still enables an existing PostgreSQL installation. PostgreSQL remains useful for multi-process deployments and development, but is not needed for a teacher to get started.
+
 ## Core goals
 
-- Manage students and assessments in PostgreSQL.
+- Manage students and assessments in a local SQLite file by default, with optional PostgreSQL support.
 - Use the fixed official 20Q_Big and 50-question large-bubble sheets.
 - Upload, align, and validate scanned answer sheets.
 - Decode bubbles using OpenCV and NumPy.
@@ -26,13 +40,15 @@ This project is a modular Flask application for automated answer-sheet scanning,
 
 ## MVP status
 
-The local MVP supports student records and CSV import, assessment and answer-key editing, the fixed 20Q_Big and 50-question large-bubble answer sheets, staged OMR review, PostgreSQL submission persistence, class analytics, optional AI lesson suggestions/PDFs, Canvas grade preview and explicit sync, and an ESP32 capture queue. Each sheet has a matching profile for registration-square geometry, student-ID bubbles, and answer bubbles. Scanner/camera behavior is validated against PDF-rendered and synthetic frames; physical printer, camera, and ejector validation remain outstanding.
+The local MVP supports student records and CSV import, assessment and answer-key editing, the fixed 20Q_Big and 50-question large-bubble answer sheets, staged OMR review, local SQLite submission persistence, class analytics, optional AI lesson suggestions/PDFs, Canvas grade preview and explicit sync, and an ESP32 capture queue. Each sheet has a matching profile for registration-square geometry, student-ID bubbles, and answer bubbles. Scanner/camera behavior is validated against PDF-rendered and synthetic frames; physical printer, camera, and ejector validation remain outstanding.
 
-The Flask factory registers models before Flask-Migrate inspects metadata. PostgreSQL via Psycopg 3 is required; SQLite is rejected. Revisions `20261101_0003` through `20261105_0012` add AI suggestions, the durable scan queue, saved camera setup and session progress, original test PDF metadata, Canvas mappings and grade history, and question-to-PDF mapping.
+The Flask factory registers models before Flask-Migrate inspects metadata. A regular single-computer install creates missing SQLite tables on first launch; PostgreSQL via Psycopg 3 is an optional override for existing deployments. Revisions `20261101_0003` through `20261105_0013` add AI suggestions, the durable scan queue, saved camera setup and session progress, original test PDF metadata, Canvas mappings and grade history, question-to-PDF mapping, and V4 answer-sheet standardization.
 
 This is a local, single-teacher MVP without application login or multi-user authorization. Canvas routes are restricted to loopback requests and require a server-stored encrypted teacher token, but this is not a substitute for institution OAuth or production account isolation. Handwriting recognition and written-answer grading are not included. ESP32/printer integration still needs physical validation.
 
-## Local setup
+## Advanced setup from source (optional PostgreSQL)
+
+The following steps are for contributors or installations that intentionally use PostgreSQL. Teachers using the Windows launcher above can skip this section.
 
 ### 1) Create and activate a virtual environment (Python 3.11+)
 
@@ -57,7 +73,7 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 3) Create PostgreSQL databases
+### 3) Create PostgreSQL databases (optional)
 
 On PostgreSQL, create a local database and user:
 
@@ -67,7 +83,7 @@ CREATE DATABASE automated_grading OWNER grading_user;
 CREATE DATABASE automated_grading_test OWNER grading_user;
 ```
 
-Copy `.env.example` to `.env`, then set the credentials locally:
+Create a `.env` file and set the database credentials and a random secret locally. Additional settings below are optional and can be omitted when their feature is unused:
 
 ```env
 DATABASE_URL=postgresql+psycopg://username:password@localhost:5432/automated_grading
@@ -113,7 +129,7 @@ See [AI Teaching Insights setup and migration notes](docs/ai-teaching-insights.m
 
 Muse Spark can optionally help locate sheet-specific registration boxes when the local detector cannot find confident geometry. Configure `MUSE_API_KEY` to enable the fallback; it sends a grayscale copy of a frame or uploaded scan to Meta only when local marker detection fails. The prompt receives the selected profile's mark size and expected corner centers; for 20Q_Big it explicitly describes the enlarged 9 mm squares and warns about the large outlined ID grid. The locator returns bounding boxes only. The app validates their size and four-corner geometry locally before alignment and uses the local OMR scanner to read answers. Repeated nearly identical live frames reuse the previous location, and calls are rate-limited by `MUSE_MIN_INTERVAL_SECONDS`. Leave the key empty to keep all image processing local.
 
-ESP32 still-image scanning requires the Alembic migrations through `20261105_0012`. The Flask app starts its persistent capture-queue consumer automatically; set `AUTO_START_SCAN_WORKER=false` only when managing `python -m services.scan_worker` separately. CameraWebServer JPEG polling still uses `python -m services.camera_poller`; see [CameraWebServer polling](docs/camera-webserver-poller.md). Save the camera ID, MJPEG preview URL, still-capture URL, and timeout once on **Automatic scanning**. For the first scan step, the browser initiates one blank A4 print and waits 16 seconds for printer calibration; later steps wait 12 seconds before requesting a high-resolution ESP32 still. The server queues each image before the browser requests another blank page, including geometry failures that need Muse alignment. The second consecutive capture with the same page signature ends scanning and is not graded twice. Configure silent printing on the scanning computer before starting: Chrome uses `--kiosk-printing`; Edge uses its managed `SilentPrintingEnabled` policy. See the one-time setup instructions on the automatic scanning page. The browser cannot detect or change its own print configuration. Session progress remains active until accepted queue items drain; review and failure totals are shown separately. Physical printer behavior and capture timing need validation. New assessments require the original text-based test PDF; numbered questions are mapped to page/excerpt candidates for teacher review. AI suggestions use the reviewed question map and class-level results. Lesson suggestions can be downloaded as PDFs.
+The local SQLite install creates its current schema automatically on first launch. Existing PostgreSQL deployments must apply the Alembic migrations through `20261105_0013` after backup. The Flask app starts its persistent capture-queue consumer automatically; set `AUTO_START_SCAN_WORKER=false` only when managing `python -m services.scan_worker` separately. CameraWebServer JPEG polling still uses `python -m services.camera_poller`; see [CameraWebServer polling](docs/camera-webserver-poller.md). Save the camera ID, MJPEG preview URL, still-capture URL, and timeout once on **Automatic scanning**. For the first scan step, the browser initiates one blank A4 print and waits 16 seconds for printer calibration; later steps wait 12 seconds before requesting a high-resolution ESP32 still. The server queues each image before the browser requests another blank page, including geometry failures that need Muse alignment. The second consecutive capture with the same page signature ends scanning and is not graded twice. Configure silent printing on the scanning computer before starting: Chrome uses `--kiosk-printing`; Edge uses its managed `SilentPrintingEnabled` policy. See the one-time setup instructions on the automatic scanning page. The browser cannot detect or change its own print configuration. Session progress remains active until accepted queue items drain; review and failure totals are shown separately. Physical printer behavior and capture timing need validation. New assessments require the original text-based test PDF; numbered questions are mapped to page/excerpt candidates for teacher review. AI suggestions use the reviewed question map and class-level results. Lesson suggestions can be downloaded as PDFs.
 
 The scan worker automatically grades and links only captures with a confidently read registered student ID, confidently read answers, and no alignment warnings. Other scans remain drafts for teacher review. The fixed answer sheet is selected by assessment question count: 20Q_Big for 20 questions and the large-bubble sheet for 50 questions. Choice E is optional unless it is the correct answer.
 

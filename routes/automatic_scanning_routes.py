@@ -24,6 +24,7 @@ from services.capture_queue import (
 )
 from services.esp32_camera import CameraError, ESP32Camera
 from services.camera_setup import get_camera_setup, save_camera_setup
+from services.camera_discovery import discover_camera
 from services.camera_poller import camera_poller_worker_running
 from services.marker_detection import detect_v3_registration_markers
 from services.paparazzi_v3_scanner import (
@@ -297,26 +298,32 @@ def dashboard():
         )
 
 
+def _ensure_camera_setup_editable() -> None:
+    control = get_scanner_control()
+    if control.active:
+        raise ValueError("Stop automatic scanning before changing the saved camera setup.")
+    poller = db.session.get(CameraIngestionState, _camera_id())
+    if poller and poller.polling_enabled:
+        raise ValueError("Stop CameraWebServer polling before changing the saved camera setup.")
+    if poller and poller.poller_running and not camera_poller_worker_running(poller.camera_id):
+        poller.poller_running = False
+        poller.connection_status = "stopped"
+        db.session.commit()
+
+
+def _clear_old_poller_selections() -> None:
+    for state in db.session.scalars(select(CameraIngestionState)).all():
+        state.polling_enabled = False
+    db.session.commit()
+
+
 @automatic_scanning_bp.route("/camera-setup", methods=["POST"])
 def update_camera_setup():
     try:
-        control = get_scanner_control()
-        if control.active:
-            raise ValueError("Stop automatic scanning before changing the saved camera setup.")
-        poller = db.session.get(CameraIngestionState, _camera_id())
-        if poller and poller.polling_enabled:
-            raise ValueError("Stop CameraWebServer polling before changing the saved camera setup.")
-        if poller and poller.poller_running and not camera_poller_worker_running(poller.camera_id):
-            poller.poller_running = False
-            poller.connection_status = "stopped"
-            db.session.commit()
+        _ensure_camera_setup_editable()
         save_camera_setup(request.form.get("camera_id", ""), request.form.get("stream_url", ""),
                           request.form.get("capture_url", ""), request.form.get("timeout_seconds", 8))
-        # Camera setup is a singleton; clear any old camera-ID toggle so a
-        # previously enabled row cannot start polling after the ID changes.
-        for state in db.session.scalars(select(CameraIngestionState)).all():
-            state.polling_enabled = False
-        db.session.commit()
+        _clear_old_poller_selections()
         flash("Camera setup saved for future scanning sessions.", "success")
     except ValueError as error:
         db.session.rollback()
@@ -324,6 +331,29 @@ def update_camera_setup():
     except SQLAlchemyError:
         db.session.rollback()
         flash("Camera setup storage is unavailable. Apply migrations through 20261105_0012.", "error")
+    return redirect(url_for("automatic_scanning.dashboard"))
+
+
+@automatic_scanning_bp.route("/camera-setup/discover", methods=["POST"])
+def discover_camera_route():
+    try:
+        _ensure_camera_setup_editable()
+        camera = discover_camera()
+        address = camera["address"]
+        save_camera_setup(
+            camera["camera_id"],
+            f"http://{address}:81/stream",
+            f"http://{address}/capture",
+            8,
+        )
+        _clear_old_poller_selections()
+        flash(f"Found {camera['camera_id']} and saved its live-preview and still-capture addresses.", "success")
+    except ValueError as error:
+        db.session.rollback()
+        flash(str(error), "error")
+    except SQLAlchemyError:
+        db.session.rollback()
+        flash("Camera setup storage is unavailable. Check the local database and try again.", "error")
     return redirect(url_for("automatic_scanning.dashboard"))
 
 

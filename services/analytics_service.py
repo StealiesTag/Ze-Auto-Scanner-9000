@@ -76,10 +76,11 @@ def build_analytics(assessment_id: int | None = None, recommendation_threshold: 
 
         score_stats = db.session.execute(
             select(func.count(Submission.id), func.avg(percentage),
-                   func.percentile_cont(0.5).within_group(percentage),
                    func.max(percentage), func.min(percentage))
             .where(*finalized_filter)
         ).one()
+        score_values = db.session.scalars(select(percentage).where(*finalized_filter)).all()
+        median_score = calculate_median([float(value) for value in score_values]) if score_values else None
         students_assessed = db.session.scalar(
             select(func.count(func.distinct(Submission.student_id))).where(*finalized_filter)
         ) or 0
@@ -166,9 +167,9 @@ def build_analytics(assessment_id: int | None = None, recommendation_threshold: 
             "scored_submissions": int(score_stats[0] or 0),
             "students_assessed": int(students_assessed),
             "average_score": float(score_stats[1]) if score_stats[1] is not None else None,
-            "median_score": float(score_stats[2]) if score_stats[2] is not None else None,
-            "highest_score": float(score_stats[3]) if score_stats[3] is not None else None,
-            "lowest_score": float(score_stats[4]) if score_stats[4] is not None else None,
+            "median_score": median_score,
+            "highest_score": float(score_stats[2]) if score_stats[2] is not None else None,
+            "lowest_score": float(score_stats[3]) if score_stats[3] is not None else None,
             "score_distribution": dict(distribution_rows),
             "questions": question_stats,
             "most_missed": sorted(

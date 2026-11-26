@@ -9,17 +9,25 @@ import socket
 import threading
 import time
 import uuid
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import cv2
 import numpy as np
+from flask import current_app
 from sqlalchemy import text
 
 from extensions import db
 from models import CameraIngestionState
 from services.camera_ingestion import ingest_camera_image_bytes, record_poller_state
+from services.local_process_lock import (
+    LocalProcessLock,
+    acquire_local_process_lock,
+    local_process_lock_is_held,
+    release_local_process_lock,
+)
 
 
 logger = logging.getLogger("paparazzi.camera_poller")
@@ -29,6 +37,8 @@ POLLER_LOCK_KEY = "paparazzi-camera-poller-service"
 
 def _advisory_lock_is_held(lock_key: str) -> bool:
     """Check worker liveness without leaving a session lock in the pool."""
+    if db.engine.dialect.name == "sqlite":
+        return local_process_lock_is_held(Path(current_app.instance_path) / "camera_poller.lock")
     with db.engine.connect() as connection:
         acquired = bool(connection.scalar(
             text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"),
@@ -215,24 +225,44 @@ class CameraPoller:
     def run(self) -> None:
         lock_connection = None
         owns_lock_connection = False
+        sqlite_backend = False
+        sqlite_lock: LocalProcessLock | None = None
         # Camera setup is a singleton, so one service lock covers all saved IDs.
         lock_key = POLLER_LOCK_KEY
         with self.app.app_context():
-            engine_or_test_connection = db.engines[None]
-            if hasattr(engine_or_test_connection, "connect"):
-                lock_connection = engine_or_test_connection.connect()
-                owns_lock_connection = True
+            sqlite_backend = db.engine.dialect.name == "sqlite"
+            if sqlite_backend:
+                sqlite_lock = acquire_local_process_lock(Path(self.app.instance_path) / "camera_poller.lock")
+                if sqlite_lock is None:
+                    raise RuntimeError(f"A poller already holds the lock for camera {self.camera_id}.")
             else:
-                lock_connection = engine_or_test_connection
-            acquired = lock_connection.scalar(
-                text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"),
-                {"lock_key": lock_key},
-            )
-            if not acquired:
-                if owns_lock_connection:
-                    lock_connection.close()
-                raise RuntimeError(f"A poller already holds the lock for camera {self.camera_id}.")
-            record_poller_state(self.camera_id, poller_running=True, connection_status="stopped", last_error=None)
+                engine_or_test_connection = db.engines[None]
+                if hasattr(engine_or_test_connection, "connect"):
+                    lock_connection = engine_or_test_connection.connect()
+                    owns_lock_connection = True
+                else:
+                    lock_connection = engine_or_test_connection
+                acquired = lock_connection.scalar(
+                    text("SELECT pg_try_advisory_lock(hashtextextended(:lock_key, 0))"),
+                    {"lock_key": lock_key},
+                )
+                if not acquired:
+                    if owns_lock_connection:
+                        lock_connection.close()
+                    raise RuntimeError(f"A poller already holds the lock for camera {self.camera_id}.")
+            try:
+                record_poller_state(self.camera_id, poller_running=True, connection_status="stopped", last_error=None)
+            except Exception:
+                if sqlite_backend:
+                    release_local_process_lock(sqlite_lock)
+                elif lock_connection is not None:
+                    lock_connection.execute(
+                        text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
+                        {"lock_key": lock_key},
+                    )
+                    if owns_lock_connection:
+                        lock_connection.close()
+                raise
         next_poll_at = time.monotonic()
         try:
             while not self.stop_event.is_set():
@@ -268,12 +298,15 @@ class CameraPoller:
                     record_poller_state(self.camera_id, poller_running=False, connection_status="stopped")
                 finally:
                     db.session.remove()
-                    lock_connection.execute(
-                        text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
-                        {"lock_key": lock_key},
-                    )
-                    if owns_lock_connection:
-                        lock_connection.close()
+                    if sqlite_backend:
+                        release_local_process_lock(sqlite_lock)
+                    else:
+                        lock_connection.execute(
+                            text("SELECT pg_advisory_unlock(hashtextextended(:lock_key, 0))"),
+                            {"lock_key": lock_key},
+                        )
+                        if owns_lock_connection:
+                            lock_connection.close()
 
 
 def main() -> None:

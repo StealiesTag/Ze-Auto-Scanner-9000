@@ -51,6 +51,8 @@
   <div class="alert alert-info" id="printer-feed-notice">The first capture waits 16 seconds after printing; later captures wait 12 seconds. A second confidently read instance of the same student ID ends the session. Distinct captures remain in the review queue.</div>
   <iframe id="printer-feed-job" title="One-page blank printer feed job" hidden></iframe>
   {% if not migration_pending %}
+  <details class="advanced-camera-controls">
+    <summary>Advanced: continuous camera polling (optional)</summary>
   <section class="card" id="camera-poller-panel">
     <p class="eyebrow">CAMERAWEBSERVER JPEG POLLING</p>
     <h2>Camera source</h2>
@@ -92,17 +94,28 @@
     {% endif %}
     <p class="small text-muted mt-3 mb-0">The poller fetches JPEGs from the server-configured local camera URL. It runs as a separate process; no browser-supplied URL is accepted.</p>
   </section>
+  </details>
   <section class="card">
-    <h2>One-time ESP32 setup</h2>
-    <p class="small text-muted">Save the local camera address once. Scanning uses still images from the ESP32 capture URL.</p>
-    <form method="post" action="{{ url_for('automatic_scanning.update_camera_setup') }}" class="row g-2 align-items-end">
+    <p class="eyebrow">ONE-TIME CAMERA CONNECTION</p>
+    <h2>Connect the ESP32 camera</h2>
+    <p>For first-time Wi-Fi setup, connect a phone to the <strong>Paparazzi-Setup</strong> network shown on the camera label, then choose the classroom Wi-Fi on the setup page. The camera saves the Wi-Fi details locally. No Arduino edits are needed.</p>
+    <p class="small text-muted">Once the camera is on the same Wi-Fi as this computer, choose Find camera. Paparazzi will locate it and save its preview and capture addresses.</p>
+    <form method="post" action="{{ url_for('automatic_scanning.discover_camera_route') }}" class="mb-3">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <div class="col-lg-2"><label class="form-label" for="setup-camera-id">Camera ID</label><input class="form-control" id="setup-camera-id" name="camera_id" maxlength="100" value="{{ camera_setup.camera_id }}" required></div>
-      <div class="col-lg-4"><label class="form-label" for="setup-stream-url">Live stream URL</label><input class="form-control" id="setup-stream-url" name="stream_url" type="url" value="{{ camera_setup.stream_url }}" placeholder="http://192.168.1.80:81/stream" required></div>
-      <div class="col-lg-4"><label class="form-label" for="setup-capture-url">Still-capture URL</label><input class="form-control" id="setup-capture-url" name="capture_url" type="url" value="{{ camera_setup.capture_url }}" placeholder="http://192.168.1.80/capture" required></div>
-      <div class="col-lg-1"><label class="form-label" for="setup-timeout">Timeout (s)</label><input class="form-control" id="setup-timeout" name="timeout_seconds" type="number" min="1" max="30" step="1" value="{{ camera_setup.timeout_seconds }}" required></div>
-      <div class="col-lg-1"><button class="btn btn-outline-primary w-100">Save</button></div>
+      <button class="btn btn-primary" type="submit">Find camera on Wi-Fi</button>
+      {% if camera_setup.stream_url and camera_setup.capture_url %}<span class="small text-muted ms-2">Saved camera: {{ camera_setup.camera_id }}</span>{% endif %}
     </form>
+    <details>
+      <summary class="fw-semibold">Advanced: enter camera addresses manually</summary>
+      <form method="post" action="{{ url_for('automatic_scanning.update_camera_setup') }}" class="row g-2 align-items-end mt-2">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="col-lg-2"><label class="form-label" for="setup-camera-id">Camera ID</label><input class="form-control" id="setup-camera-id" name="camera_id" maxlength="100" value="{{ camera_setup.camera_id }}" required></div>
+        <div class="col-lg-4"><label class="form-label" for="setup-stream-url">Live stream URL</label><input class="form-control" id="setup-stream-url" name="stream_url" type="url" value="{{ camera_setup.stream_url }}" placeholder="http://192.168.1.80:81/stream" required></div>
+        <div class="col-lg-4"><label class="form-label" for="setup-capture-url">Still-capture URL</label><input class="form-control" id="setup-capture-url" name="capture_url" type="url" value="{{ camera_setup.capture_url }}" placeholder="http://192.168.1.80/capture" required></div>
+        <div class="col-lg-1"><label class="form-label" for="setup-timeout">Timeout (s)</label><input class="form-control" id="setup-timeout" name="timeout_seconds" type="number" min="1" max="30" step="1" value="{{ camera_setup.timeout_seconds }}" required></div>
+        <div class="col-lg-1"><button class="btn btn-outline-primary w-100">Save</button></div>
+      </form>
+    </details>
     <p class="small text-warning mt-2 mb-0">Load completed answer sheets for feeding. The automatic scan prints one blank A4 page per cycle using the system default printer; set A4 paper and disable duplex in printer preferences before scanning.</p>
   </section>
   <section class="card">

@@ -1,8 +1,11 @@
 import os
+import secrets
 import threading
 from hmac import compare_digest
+from pathlib import Path
 
 from flask import Flask, Response as HTTPResponse, render_template, request
+from sqlalchemy import event
 from sqlalchemy.engine import make_url
 
 from config import config
@@ -18,11 +21,35 @@ def create_app(config_name: str = "default") -> Flask:
     database_url = app.config.get("SQLALCHEMY_DATABASE_URI")
     if not database_url:
         variable = "TEST_DATABASE_URL" if config_name == "testing" else "DATABASE_URL"
-        raise RuntimeError(f"{variable} is required; configure a PostgreSQL connection in .env.")
-    if make_url(database_url).drivername != "postgresql+psycopg":
-        raise RuntimeError("Only PostgreSQL using the Psycopg 3 driver is supported.")
+        raise RuntimeError(f"{variable} is required for this application configuration.")
+    database_backend = make_url(database_url).get_backend_name()
+    if database_backend not in {"sqlite", "postgresql"} or (
+        database_backend == "postgresql" and make_url(database_url).drivername != "postgresql+psycopg"
+    ):
+        raise RuntimeError("Use the default local SQLite database or PostgreSQL with the Psycopg 3 driver.")
+    app.config["PAPARAZZI_DATABASE_BACKEND"] = database_backend
+    if database_backend == "sqlite":
+        Path(app.instance_path).mkdir(parents=True, exist_ok=True)
+        app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+            **app.config.get("SQLALCHEMY_ENGINE_OPTIONS", {}),
+            "connect_args": {"check_same_thread": False, "timeout": 30},
+        }
     if not app.config.get("SECRET_KEY"):
-        raise RuntimeError("SECRET_KEY is required; configure it in .env.")
+        if database_backend == "sqlite":
+            key_path = Path(app.instance_path) / ".secret_key"
+            try:
+                secret = key_path.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                secret = ""
+            if not secret:
+                secret = secrets.token_urlsafe(48)
+                try:
+                    key_path.write_text(secret, encoding="utf-8")
+                except FileExistsError:
+                    secret = key_path.read_text(encoding="utf-8").strip()
+            app.config["SECRET_KEY"] = secret
+        else:
+            raise RuntimeError("SECRET_KEY is required for PostgreSQL deployments; configure it in .env.")
 
     db.init_app(app)
     migrate.init_app(app, db)
@@ -52,6 +79,22 @@ def create_app(config_name: str = "default") -> Flask:
     from routes import register_blueprints
 
     register_blueprints(app)
+    if database_backend == "sqlite":
+        # The packaged single-teacher install starts at the current model
+        # schema without requiring a separate migration command.
+        with app.app_context():
+            engine = db.engine
+
+            @event.listens_for(engine, "connect")
+            def configure_sqlite_connection(connection, _record):
+                cursor = connection.cursor()
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.close()
+
+            with engine.connect() as connection:
+                connection.exec_driver_sql("PRAGMA journal_mode=WAL")
+            db.create_all()
     app.config["MAX_CONTENT_LENGTH"] = int(app.config["MAX_CONTENT_LENGTH"])
     if not 0 < app.config["RECOMMENDATION_ERROR_THRESHOLD"] <= 1:
         raise RuntimeError("RECOMMENDATION_ERROR_THRESHOLD must be greater than 0 and no greater than 1.")
@@ -123,4 +166,10 @@ def create_app(config_name: str = "default") -> Flask:
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(host=os.getenv("HOST", "127.0.0.1"), port=int(os.getenv("PORT", "5000")), debug=False)
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "5000"))
+    if os.getenv("PAPARAZZI_OPEN_BROWSER", "").strip().lower() in {"1", "true", "yes"}:
+        import webbrowser
+
+        threading.Timer(1.2, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+    app.run(host=host, port=port, debug=False)
