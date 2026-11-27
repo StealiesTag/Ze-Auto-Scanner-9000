@@ -8,7 +8,7 @@ You do not need PostgreSQL, a `.env` file, or a separate database service.
 
 1. On GitHub, choose **Code → Download ZIP**, then extract the ZIP to a normal folder.
 2. Install Python 3.11 or newer if it is not already installed.
-3. Double-click `start_paparazzi.bat`.
+3. Double-click `start.bat` (it runs the Paparazzi setup and launcher).
 
 On first launch, the script installs the app packages and starts Paparazzi in your browser. The app creates its local database automatically in `instance/paparazzi.db` and keeps uploaded scans in `uploads/`. Keep the console window open while using Paparazzi. First launch needs an internet connection to download packages; later launches use the installed copy. If package requirements change after an app update, delete `.venv/.paparazzi_packages_ready` and launch again.
 
