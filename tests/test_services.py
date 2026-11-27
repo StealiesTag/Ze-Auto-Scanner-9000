@@ -215,7 +215,7 @@ def test_manual_correction_accepts_choice_e():
     assert submission.score == Decimal("1.00")
 
 
-def test_factory_registers_routes_and_rejects_non_postgresql(monkeypatch):
+def test_factory_registers_routes_and_rejects_unsupported_database(monkeypatch):
     from app import create_app
     from config import config
 
@@ -229,8 +229,8 @@ def test_factory_registers_routes_and_rejects_non_postgresql(monkeypatch):
     assert student_form.status_code == 200 and b'name="csrf_token"' in student_form.data
     assert assessment_form.status_code == 200 and b'name="csrf_token"' in assessment_form.data
     assert "/students/new" in {rule.rule for rule in app.url_map.iter_rules()}
-    monkeypatch.setattr(config["default"], "SQLALCHEMY_DATABASE_URI", "sqlite:///not-allowed.db")
-    with pytest.raises(RuntimeError, match="Only PostgreSQL"):
+    monkeypatch.setattr(config["default"], "SQLALCHEMY_DATABASE_URI", "mysql://localhost/unsupported")
+    with pytest.raises(RuntimeError, match="SQLite database or PostgreSQL"):
         create_app()
 
 

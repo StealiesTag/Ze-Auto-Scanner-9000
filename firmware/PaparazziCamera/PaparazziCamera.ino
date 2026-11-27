@@ -2,186 +2,296 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
-#include <DNSServer.h>
-#include <WebServer.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
+#include <ArduinoJson.h>
+#include <esp_attr.h>
+#include <esp_system.h>
 #include "board_config.h"
 
-// Copy this sketch into the Espressif CameraWebServer example folder so its
-// board_config.h, app_httpd.cpp, and camera_index.h remain available.
 void startCameraServer();
 void setupLedFlash();
 
 namespace {
-constexpr char kSetupServiceName[] = "paparazzi-camera";
-constexpr char kSetupServiceProtocol[] = "tcp";
-constexpr char kSetupKeyAlphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-constexpr uint16_t kDnsPort = 53;
-constexpr uint32_t kWifiConnectTimeoutMs = 18000;
+constexpr size_t kLimit = 2048;
+constexpr uint32_t kWifiTimeout = 14000;
+constexpr uint32_t kHeartbeatInterval = 30000;
+struct Line { char text[kLimit]; };
+struct Settings {
+  String ssid, password, server, token, name = "Paparazzi Camera", resolution = "SVGA";
+  int interval = 1000, quality = 20;
+};
 
-Preferences preferences;
-DNSServer dnsServer;
-WebServer setupServer(80);
+QueueHandle_t commands;
+SemaphoreHandle_t serialOutput;
 String cameraId;
-String setupSsid;
-String setupPassword;
+Settings settings;
+bool cameraReady = false, cameraServerStarted = false, serverConnected = false;
+bool durable = false;
+uint32_t lastHeartbeat = 0;
+RTC_NOINIT_ATTR uint32_t cameraInitMarker;
+constexpr uint32_t kCameraInitMarker = 0x507A4361;
 
-String escapeHtml(const String &value) {
-  String escaped;
-  escaped.reserve(value.length());
+void reply(const char *id, bool success, const char *code = nullptr, JsonObjectConst result = JsonObjectConst()) {
+  JsonDocument response;
+  response["request_id"] = id;
+  response["success"] = success;
+  if (code) response["code"] = code;
+  if (!result.isNull()) response["result"] = result;
+  xSemaphoreTake(serialOutput, portMAX_DELAY);
+  serializeJson(response, Serial);
+  Serial.println();
+  xSemaphoreGive(serialOutput);
+}
+
+bool safeText(const String &value, size_t limit) {
+  if (value.length() > limit) return false;
   for (size_t i = 0; i < value.length(); ++i) {
-    switch (value[i]) {
-      case '&': escaped += F("&amp;"); break;
-      case '<': escaped += F("&lt;"); break;
-      case '>': escaped += F("&gt;"); break;
-      case '"': escaped += F("&quot;"); break;
-      case '\'': escaped += F("&#39;"); break;
-      default: escaped += value[i]; break;
+    const auto ch = static_cast<unsigned char>(value[i]);
+    if (ch < 32 || ch == 127) return false;
+  }
+  return true;
+}
+
+bool validURL(const String &url) {
+  const String suffix = "/api/camera/ingest";
+  if (!url.startsWith("http://") || !url.endsWith(suffix)) return false;
+  const String authority = url.substring(7, url.length() - suffix.length());
+  const int colon = authority.indexOf(':');
+  const String hostname = colon < 0 ? authority : authority.substring(0, colon);
+  if (colon >= 0) {
+    const String port = authority.substring(colon + 1);
+    if (port.isEmpty() || port.length() > 5) return false;
+    for (size_t i = 0; i < port.length(); ++i) if (port[i] < '0' || port[i] > '9') return false;
+    if (port.toInt() < 1 || port.toInt() > 65535) return false;
+  }
+  IPAddress ip;
+  if (!ip.fromString(hostname) || ip.toString() != hostname) return false;
+  return ip[0] == 10 || (ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31)
+      || (ip[0] == 192 && ip[1] == 168);
+}
+
+bool parseSettings(JsonObjectConst data, Settings &next) {
+  for (const char *key : {"ssid", "server_url", "heartbeat_token", "device_name", "resolution"})
+    if (!data[key].is<const char *>()) return false;
+  if (data.containsKey("password") && !data["password"].is<const char *>()) return false;
+  if (!data["capture_interval_ms"].is<int>() || !data["jpeg_quality"].is<int>()) return false;
+  next.ssid = data["ssid"].as<String>();
+  if (data.containsKey("password")) next.password = data["password"].as<String>();
+  next.server = data["server_url"].as<String>();
+  next.token = data["heartbeat_token"].as<String>();
+  next.name = data["device_name"].as<String>();
+  next.interval = data["capture_interval_ms"].as<int>();
+  next.quality = data["jpeg_quality"].as<int>();
+  next.resolution = data["resolution"].as<String>();
+  if (next.token.length() != 64) return false;
+  for (size_t i = 0; i < next.token.length(); ++i)
+    if (!isxdigit(static_cast<unsigned char>(next.token[i]))) return false;
+  return !next.ssid.isEmpty() && safeText(next.ssid, 32) && safeText(next.password, 63)
+      && (next.password.isEmpty() || next.password.length() >= 8)
+      && !next.name.isEmpty() && safeText(next.name, 48)
+      && safeText(next.server, 240) && validURL(next.server)
+      && next.interval >= 500 && next.interval <= 60000 && next.quality >= 10 && next.quality <= 40
+      && (next.resolution == "VGA" || next.resolution == "SVGA");
+}
+
+void publicSettings(JsonObject output, const Settings &value) {
+  output["ssid"] = value.ssid;
+  output["device_name"] = value.name;
+  output["server_url"] = value.server;
+  output["capture_interval_ms"] = value.interval;
+  output["jpeg_quality"] = value.quality;
+  output["resolution"] = value.resolution;
+  output["password_set"] = !value.password.isEmpty();
+}
+
+void loadSettings() {
+  char mac[13];
+  snprintf(mac, sizeof(mac), "%012llx", static_cast<unsigned long long>(ESP.getEfuseMac() & 0xFFFFFFFFFFFFULL));
+  cameraId = String("paparazzi-") + mac;
+  Preferences nvs;
+  if (!nvs.begin("paparazzi", true)) return;
+  JsonDocument saved;
+  if (!deserializeJson(saved, nvs.getString("usb_config", ""))) {
+    Settings loaded;
+    if (parseSettings(saved.as<JsonObjectConst>(), loaded)) {
+      settings = loaded;
+      durable = true;
     }
   }
-  return escaped;
-}
-
-String makeSetupPassword() {
-  String result;
-  result.reserve(16);
-  const size_t alphabetLength = sizeof(kSetupKeyAlphabet) - 1;
-  for (size_t i = 0; i < 16; ++i) {
-    result += kSetupKeyAlphabet[esp_random() % alphabetLength];
+  if (!durable) {
+    settings.ssid = nvs.getString("wifi_ssid", "");
+    settings.password = nvs.getString("wifi_pass", "");
   }
-  return result;
+  nvs.end();
 }
 
-void loadDeviceNames() {
-  const uint64_t mac = ESP.getEfuseMac();
-  char suffix[7];
-  snprintf(suffix, sizeof(suffix), "%06llx", static_cast<unsigned long long>(mac & 0xFFFFFF));
-  cameraId = String("paparazzi-") + suffix;
-  setupSsid = String("Paparazzi-Setup-") + suffix;
-
-  preferences.begin("paparazzi", false);
-  setupPassword = preferences.getString("setup_key", "");
-  if (setupPassword.length() < 12) {
-    setupPassword = makeSetupPassword();
-    preferences.putString("setup_key", setupPassword);
+bool saveSettings(const Settings &next) {
+  JsonDocument document;
+  publicSettings(document.to<JsonObject>(), next);
+  document.remove("password_set");
+  document["password"] = next.password;
+  document["heartbeat_token"] = next.token;
+  String serialized;
+  serializeJson(document, serialized);
+  Preferences nvs;
+  if (!nvs.begin("paparazzi", false)) return false;
+  const bool saved = nvs.getString("usb_config", "") == serialized
+      || nvs.putString("usb_config", serialized) == serialized.length();
+  if (saved && !durable) {
+    nvs.remove("wifi_ssid");
+    nvs.remove("wifi_pass");
   }
-  preferences.end();
+  nvs.end();
+  return saved;
 }
 
-bool connectToSavedWifi() {
-  preferences.begin("paparazzi", true);
-  const String ssid = preferences.getString("wifi_ssid", "");
-  const String password = preferences.getString("wifi_pass", "");
-  preferences.end();
-  if (ssid.isEmpty()) return false;
+void join(const Settings &value) {
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  if (!value.ssid.isEmpty()) WiFi.begin(value.ssid.c_str(), value.password.c_str());
+}
 
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  WiFi.setAutoReconnect(true);
-  WiFi.begin(ssid.c_str(), password.c_str());
-  Serial.printf("Connecting to saved Wi-Fi: %s\n", ssid.c_str());
-  const uint32_t started = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - started < kWifiConnectTimeoutMs) {
-    delay(250);
-    Serial.print('.');
+bool heartbeat(const Settings &value, bool probe) {
+  if (value.server.isEmpty() || WiFi.status() != WL_CONNECTED) return false;
+  String url = value.server.substring(0, value.server.length() - strlen("/api/camera/ingest"));
+  url += "/api/devices/heartbeat";
+  WiFiClient socket;
+  HTTPClient http;
+  http.setConnectTimeout(2500);
+  http.setTimeout(2500);
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+  if (!http.begin(socket, url)) return false;
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Authorization", String("Bearer ") + value.token);
+  JsonDocument payload;
+  payload["device_id"] = cameraId;
+  payload["camera_ready"] = cameraReady;
+  payload["device_name"] = value.name;
+  payload["ssid"] = value.ssid;
+  payload["capture_interval_ms"] = value.interval;
+  payload["probe"] = probe;
+  String body;
+  serializeJson(payload, body);
+  const int result = http.POST(body);
+  http.end();
+  return result == 200;
+}
+
+bool applyImageSettings(const Settings &value) {
+  sensor_t *sensor = cameraReady ? esp_camera_sensor_get() : nullptr;
+  if (!sensor) return false;
+  return sensor->set_framesize(sensor, value.resolution == "VGA" ? FRAMESIZE_VGA : FRAMESIZE_SVGA) == 0
+      && sensor->set_quality(sensor, value.quality) == 0;
+}
+
+void usbTask(void *) {
+  Line line{};
+  size_t used = 0;
+  bool discard = false;
+  uint32_t lastByte = millis();
+  for (;;) {
+    if (millis() - lastByte > 1500) { used = 0; discard = false; }
+    while (Serial.available()) {
+      const int ch = Serial.read();
+      lastByte = millis();
+      if (ch == '\n') {
+        if (discard) {
+          reply("", false, "message_too_large");
+        } else if (used) {
+          line.text[used] = 0;
+          JsonDocument request;
+          if (deserializeJson(request, static_cast<const char *>(line.text))) {
+            reply("", false, "malformed_json");
+          } else {
+            const char *id = request["request_id"] | "";
+            const char *action = request["command"] | "";
+            if (!*id || strlen(id) > 64 || !*action) reply("", false, "invalid_request");
+            else if (!strcmp(action, "PING")) reply(id, true);
+            else if (xQueueSend(commands, &line, 0) != pdTRUE) reply(id, false, "busy");
+          }
+        }
+        used = 0;
+        discard = false;
+      } else if (ch != '\r' && !discard) {
+        if (used < sizeof(line.text) - 1) line.text[used++] = static_cast<char>(ch);
+        else discard = true;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
-  Serial.println();
-  return WiFi.status() == WL_CONNECTED;
 }
 
-String setupPage() {
-  const int networkCount = WiFi.scanNetworks(false, true);
-  String options;
-  for (int i = 0; i < networkCount; ++i) {
-    const String ssid = WiFi.SSID(i);
-    if (!ssid.isEmpty()) options += "<option value=\"" + escapeHtml(ssid) + "\"></option>";
-  }
-
-  String page = F("<!doctype html><html lang='en'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                  "<meta charset='utf-8'><title>Paparazzi camera setup</title>"
-                  "<style>body{font:16px system-ui;max-width:34rem;margin:2rem auto;padding:0 1rem;color:#202b27}"
-                  "label{display:block;margin:1rem 0 .3rem}input,button{box-sizing:border-box;width:100%;padding:.8rem;font:inherit}"
-                  "button{margin-top:1.2rem;background:#285c4b;color:white;border:0}small{color:#68736e}</style>"
-                  "<h1>Connect Paparazzi camera</h1><p>Choose the classroom Wi-Fi. The camera stores these details and reconnects automatically.</p>"
-                  "<form method='post' action='/save'><label for='ssid'>Wi-Fi network</label>"
-                  "<input id='ssid' name='ssid' list='networks' maxlength='32' autocomplete='off' required>"
-                  "<datalist id='networks'>");
-  page += options;
-  page += F("</datalist><label for='password'>Wi-Fi password</label>"
-            "<input id='password' name='password' type='password' maxlength='63' autocomplete='new-password'>"
-            "<small>This setup page is available only through the camera's password-protected setup network.</small>"
-            "<button type='submit'>Save Wi-Fi and connect camera</button></form></html>");
-  WiFi.scanDelete();
-  return page;
-}
-
-void handleSetupRoot() {
-  setupServer.sendHeader("Cache-Control", "no-store");
-  setupServer.send(200, "text/html; charset=utf-8", setupPage());
-}
-
-void handleWifiSave() {
-  String ssid = setupServer.arg("ssid");
-  String password = setupServer.arg("password");
-  ssid.trim();
-  if (ssid.isEmpty() || ssid.length() > 32 || password.length() > 63 ||
-      (!password.isEmpty() && password.length() < 8)) {
-    setupServer.send(400, "text/plain; charset=utf-8", "Enter a valid Wi-Fi name and password.");
+void runCommand(const Line &line) {
+  JsonDocument request, response;
+  if (deserializeJson(request, static_cast<const char *>(line.text))) return;
+  const char *id = request["request_id"] | "";
+  const String action = request["command"].as<String>();
+  const JsonObjectConst data = request["data"].as<JsonObjectConst>();
+  JsonObject result = response.to<JsonObject>();
+  if (action == "GET_DEVICE_INFO" || action == "GET_CONFIG" || action == "GET_STATUS") {
+    publicSettings(result, settings);
+    result["device_id"] = cameraId;
+    result["product"] = "Paparazzi";
+    result["firmware_version"] = "1.0.0";
+    result["protocol_version"] = 1;
+    result["wifi_connected"] = WiFi.status() == WL_CONNECTED;
+    result["server_connected"] = serverConnected && WiFi.status() == WL_CONNECTED;
+    result["camera_ready"] = cameraReady;
+    result["ip"] = WiFi.localIP().toString();
+    result["saved"] = durable;
+    reply(id, true, nullptr, result);
     return;
   }
-
-  preferences.begin("paparazzi", false);
-  preferences.putString("wifi_ssid", ssid);
-  preferences.putString("wifi_pass", password);
-  preferences.end();
-
-  setupServer.send(200, "text/html; charset=utf-8",
-                   "<!doctype html><meta name='viewport' content='width=device-width'>"
-                   "<h2>Wi-Fi saved</h2><p>The camera is restarting and will join the selected network.</p>");
-  delay(1200);
-  ESP.restart();
-}
-
-void redirectToSetup() {
-  setupServer.sendHeader("Location", "http://192.168.4.1/", true);
-  setupServer.send(302, "text/plain", "Opening camera setup");
-}
-
-void startWifiSetupPortal() {
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.setSleep(false);
-  if (!WiFi.softAP(setupSsid.c_str(), setupPassword.c_str())) {
-    Serial.println("Could not start the protected camera setup network.");
-    delay(2000);
+  if (action == "RESTART" || action == "FACTORY_RESET") {
+    if (action == "FACTORY_RESET") {
+      if (cameraId != (data["confirmation"] | "")) { reply(id, false, "confirmation_required"); return; }
+      Preferences nvs;
+      if (!nvs.begin("paparazzi", false) || !nvs.clear()) {
+        reply(id, false, "storage_failed");
+        return;
+      }
+      nvs.end();
+    }
+    reply(id, true);
+    delay(150);
     ESP.restart();
+    return;
   }
-
-  dnsServer.start(kDnsPort, "*", WiFi.softAPIP());
-  setupServer.on("/", HTTP_GET, handleSetupRoot);
-  setupServer.on("/save", HTTP_POST, handleWifiSave);
-  setupServer.onNotFound(redirectToSetup);
-  setupServer.begin();
-
-  Serial.println("Wi-Fi is not configured. Use the password label on the camera.");
-  Serial.printf("Setup network: %s\n", setupSsid.c_str());
-  Serial.printf("Setup network password: %s\n", setupPassword.c_str());
-  Serial.println("Setup page: http://192.168.4.1");
-  while (true) {
-    dnsServer.processNextRequest();
-    setupServer.handleClient();
-    delay(2);
+  if (action != "SET_CONFIG" && action != "TEST_WIFI" && action != "TEST_SERVER") {
+    reply(id, false, "unknown_command");
+    return;
   }
-}
-
-bool startCameraServices() {
-  if (!MDNS.begin(cameraId.c_str())) {
-    Serial.println("mDNS startup failed; camera still works at its printed IP address.");
-    return false;
+  Settings candidate = settings;
+  if (!parseSettings(data, candidate)) { reply(id, false, "invalid_config"); return; }
+  const bool changedWifi = candidate.ssid != settings.ssid || candidate.password != settings.password
+      || WiFi.status() != WL_CONNECTED;
+  if (changedWifi) join(candidate);
+  const uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiTimeout) delay(50);
+  const char *error = nullptr;
+  if (WiFi.status() != WL_CONNECTED) error = "wifi_failed";
+  else if (action != "TEST_WIFI" && !heartbeat(candidate, true)) error = "server_failed";
+  if (!error && action == "SET_CONFIG") {
+    const bool changedImage = candidate.quality != settings.quality || candidate.resolution != settings.resolution;
+    if (changedImage && !applyImageSettings(candidate)) error = "camera_failed";
+    else if (!saveSettings(candidate)) error = "storage_failed";
+    if (error && changedImage && cameraReady) applyImageSettings(settings);
+    if (!error) {
+      settings = candidate;
+      durable = true;
+      serverConnected = true;
+      lastHeartbeat = millis() - kHeartbeatInterval;
+    }
   }
-  MDNS.setInstanceName("Paparazzi Camera");
-  MDNS.addService(kSetupServiceName, kSetupServiceProtocol, 80);
-  MDNS.addServiceTxt(kSetupServiceName, kSetupServiceProtocol, "camera_id", cameraId);
-  return true;
+  if ((error || action != "SET_CONFIG") && changedWifi) join(settings);
+  WiFi.setAutoReconnect(true);
+  if (error) reply(id, false, error);
+  else {
+    result["test_passed"] = true;
+    result["saved"] = action == "SET_CONFIG";
+    reply(id, true, nullptr, result);
+  }
 }
 
 bool startCamera() {
@@ -261,22 +371,52 @@ bool startCamera() {
 #endif
   return true;
 }
+
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
-  Serial.setDebugOutput(true);
-  loadDeviceNames();
-
-  if (!connectToSavedWifi()) startWifiSetupPortal();
-  if (!startCamera()) return;
-
-  startCameraServices();
-  startCameraServer();
-  Serial.printf("Paparazzi camera ready: %s.local\n", cameraId.c_str());
-  Serial.printf("Camera IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.setDebugOutput(false);
+  commands = xQueueCreate(1, sizeof(Line));
+  serialOutput = xSemaphoreCreateMutex();
+  if (commands && serialOutput) xTaskCreate(usbTask, "paparazzi-usb", 8192, nullptr, 2, nullptr);
+  loadSettings();
+  WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+  join(settings);
+  WiFi.setAutoReconnect(true);
+  // A reset inside the driver can otherwise prevent USB recovery on every boot.
+  const bool recoveryBoot = esp_reset_reason() != ESP_RST_POWERON && cameraInitMarker == kCameraInitMarker;
+  if (!recoveryBoot) {
+    cameraInitMarker = kCameraInitMarker;
+    cameraReady = startCamera();
+  }
+  cameraInitMarker = 0;
+  if (cameraReady && durable && !applyImageSettings(settings)) {
+    // Keep the hardware defaults available for USB recovery.
+    applyImageSettings(Settings{});
+  }
 }
 
 void loop() {
-  delay(10000);
+  Line line{};
+  if (commands && xQueueReceive(commands, &line, 0) == pdTRUE) runCommand(line);
+  if (WiFi.status() == WL_CONNECTED) {
+    if (cameraReady && !cameraServerStarted) {
+      if (MDNS.begin(cameraId.c_str())) {
+        MDNS.addService("paparazzi-camera", "tcp", 80);
+        MDNS.addServiceTxt("paparazzi-camera", "tcp", "camera_id", cameraId);
+      }
+      startCameraServer();
+      cameraServerStarted = true;
+    }
+    if (durable && millis() - lastHeartbeat >= kHeartbeatInterval) {
+      serverConnected = heartbeat(settings, false);
+      lastHeartbeat = millis();
+    }
+  } else {
+    serverConnected = false;
+  }
+  delay(20);
 }

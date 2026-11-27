@@ -25,7 +25,7 @@ if not exist ".venv\.paparazzi_packages_ready" (
     echo ready>".venv\.paparazzi_packages_ready"
 )
 
-".venv\Scripts\python.exe" -c "import zeroconf" >nul 2>nul
+".venv\Scripts\python.exe" -c "import zeroconf, serial, psutil" >nul 2>nul
 if errorlevel 1 (
     echo Installing updated Paparazzi packages...
     ".venv\Scripts\python.exe" -m pip install -r requirements-local.txt
@@ -33,6 +33,7 @@ if errorlevel 1 (
 )
 
 set PAPARAZZI_OPEN_BROWSER=1
+if not defined HOST set HOST=0.0.0.0
 echo Starting Paparazzi. Keep this window open while you use the app.
 ".venv\Scripts\python.exe" app.py
 echo Paparazzi has stopped.

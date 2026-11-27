@@ -56,7 +56,7 @@ def create_app(config_name: str = "default") -> Flask:
 
     @app.before_request
     def authenticate_teacher():
-        if request.blueprint == "camera_api":
+        if request.blueprint in {"camera_api", "device_heartbeat"}:
             return None
         password = app.config["PAPARAZZI_TEACHER_PASSWORD"]
         if not password:
@@ -171,5 +171,6 @@ if __name__ == "__main__":
     if os.getenv("PAPARAZZI_OPEN_BROWSER", "").strip().lower() in {"1", "true", "yes"}:
         import webbrowser
 
-        threading.Timer(1.2, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+        browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+        threading.Timer(1.2, lambda: webbrowser.open(f"http://{browser_host}:{port}")).start()
     app.run(host=host, port=port, debug=False)

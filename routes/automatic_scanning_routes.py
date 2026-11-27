@@ -1,5 +1,6 @@
 from hmac import compare_digest
 from datetime import datetime, timezone
+from routes.device_routes import printer_capture_delay
 from time import monotonic
 
 from flask import Blueprint, abort, current_app, flash, jsonify, redirect, render_template, request, send_from_directory, url_for
@@ -408,7 +409,7 @@ def capture_step():
         started_time = datetime.fromisoformat(str(print_started_at))
         if started_time.tzinfo is None:
             started_time = started_time.replace(tzinfo=timezone.utc)
-        required_delay = 16.0 if step == 1 else 12.0
+        required_delay = printer_capture_delay(_camera_id(), 16.0 if step == 1 else 12.0)
         elapsed = (datetime.now(timezone.utc) - started_time.astimezone(timezone.utc)).total_seconds()
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "The print start time is invalid. Stop and restart scanning before capturing."}), 409

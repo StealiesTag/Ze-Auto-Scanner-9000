@@ -26,6 +26,7 @@
           <a class="{{ 'is-active' if current.startswith('automatic_scanning.') else '' }}" {% if current.startswith('automatic_scanning.') %}aria-current="page"{% endif %} href="{{ url_for('automatic_scanning.dashboard') }}">Auto scan</a>
           <a class="{{ 'is-active' if current.startswith('analytics.') else '' }}" {% if current.startswith('analytics.') %}aria-current="page"{% endif %} href="{{ url_for('analytics.index') }}">Analytics</a>
           <a class="{{ 'is-active' if current.startswith('canvas.') else '' }}" {% if current.startswith('canvas.') %}aria-current="page"{% endif %} href="{{ url_for('canvas.settings') }}">Canvas</a>
+          <a href="{{ url_for('devices.setup') }}" {% if current == 'devices.setup' %}aria-current="page" class="is-active"{% endif %}>Device setup</a>
         </nav>
       </div>
     </header>
