@@ -33,7 +33,10 @@ if errorlevel 1 (
 )
 
 set PAPARAZZI_OPEN_BROWSER=1
-if not defined HOST set HOST=0.0.0.0
+set PAPARAZZI_BROWSER=chrome
+rem Paparazzi's ESP32 needs to reach the heartbeat endpoint over the LAN.
+rem Ignore a stale machine-level HOST=127.0.0.1 value for the standard launcher.
+set HOST=0.0.0.0
 echo Starting Paparazzi. Keep this window open while you use the app.
 ".venv\Scripts\python.exe" app.py
 echo Paparazzi has stopped.

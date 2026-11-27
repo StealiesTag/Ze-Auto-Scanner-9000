@@ -24,6 +24,25 @@ class DeviceError(RuntimeError):
         self.code = code
 
 
+def wifi_failure_message(result):
+    """Translate ESP-IDF station-disconnect reasons without exposing credentials."""
+    result = result if isinstance(result, dict) else {}
+    reason = result.get("wifi_reason")
+    messages = {
+        2: "The access point authentication timed out or expired before connection completed. This can be caused by a missing saved password or router security negotiation.",
+        4: "The access point did not complete the Wi-Fi association.",
+        15: "The Wi-Fi security handshake did not complete. Check router security compatibility.",
+        200: "The ESP32 lost the access point beacon during connection.",
+        201: "The ESP32 could not see that Wi-Fi network. Check its 2.4 GHz band, channel, and signal.",
+        202: "The access point rejected Wi-Fi authentication. Check its security mode and saved password.",
+        203: "The access point did not accept the ESP32 association.",
+        204: "The Wi-Fi security handshake timed out. Check router security compatibility and signal.",
+    }
+    if type(reason) is int:
+        return f"{messages.get(reason, 'The ESP32 could not complete Wi-Fi association.')} (ESP32 reason {reason})."
+    return "The ESP32 could not complete Wi-Fi association before the timeout. The firmware did not report a disconnect reason."
+
+
 def validate_config(data):
     if not isinstance(data, dict):
         raise ValueError("Enter camera settings.")
@@ -202,14 +221,15 @@ class USBDevices:
                     code = reply.get("code")
                     errors = {
                         "invalid_config": "The camera rejected the settings.",
-                        "wifi_failed": "The camera could not join Wi-Fi. Check the password and 2.4 GHz network.",
+                        "wifi_failed": "The ESP32 could not complete Wi-Fi association.",
                         "server_failed": "The camera could not reach Paparazzi. Check LAN access, Windows Firewall, and Wi-Fi isolation.",
                         "camera_failed": "The camera could not apply these image settings.",
                         "storage_failed": "The camera could not save its settings.",
                         "busy": "The camera is finishing another request.",
                     }
+                    message = wifi_failure_message(reply.get("result")) if code == "wifi_failed" else errors.get(code, "The camera rejected the request.")
                     raise DeviceError(code if isinstance(code, str) and code in errors else "device_error",
-                                      errors.get(code, "The camera rejected the request.") if isinstance(code, str) else "The camera rejected the request.")
+                                      message)
                 return reply["result"] if isinstance(reply.get("result"), dict) else {}
         except (serial.SerialException, OSError):
             raise DeviceError("disconnected", "USB communication was interrupted. Reconnect the camera.") from None

@@ -166,11 +166,39 @@ def create_app(config_name: str = "default") -> Flask:
 
 if __name__ == "__main__":
     app = create_app()
-    host = os.getenv("HOST", "127.0.0.1")
+    # The ESP32 must reach Paparazzi over the LAN for setup checks and status
+    # heartbeats. Teacher-facing routes still enforce loopback/password access.
+    host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "5000"))
     if os.getenv("PAPARAZZI_OPEN_BROWSER", "").strip().lower() in {"1", "true", "yes"}:
         import webbrowser
 
         browser_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-        threading.Timer(1.2, lambda: webbrowser.open(f"http://{browser_host}:{port}")).start()
+        browser_url = f"http://{browser_host}:{port}"
+        requested_browser = os.getenv("PAPARAZZI_BROWSER", "").strip().lower()
+
+        def open_app_browser():
+            if requested_browser != "chrome":
+                webbrowser.open(browser_url)
+                return
+
+            import shutil
+            import subprocess
+            from pathlib import Path
+
+            candidates = [os.getenv("PAPARAZZI_CHROME_PATH", "")]
+            for base in (os.getenv("PROGRAMFILES"), os.getenv("PROGRAMFILES(X86)"), os.getenv("LOCALAPPDATA")):
+                if base:
+                    candidates.append(str(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"))
+            chrome_path = next((path for path in candidates if path and Path(path).is_file()), None)
+            chrome_path = chrome_path or shutil.which("chrome.exe") or shutil.which("google-chrome")
+            if chrome_path:
+                subprocess.Popen([chrome_path, browser_url], close_fds=True)
+                return
+            try:
+                webbrowser.get("chrome").open(browser_url)
+            except webbrowser.Error:
+                app.logger.error("Chrome was requested but could not be found. Set PAPARAZZI_CHROME_PATH to chrome.exe.")
+
+        threading.Timer(1.2, open_app_browser).start()
     app.run(host=host, port=port, debug=False)

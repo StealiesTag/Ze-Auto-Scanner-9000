@@ -118,7 +118,7 @@ def network():
     port = os.getenv("PORT") or request.environ.get("SERVER_PORT", "5000")
     urls = [{**item, "url": f"http://{item['address']}:{port}/api/camera/ingest"}
             for item in lan_addresses(request.args.get("peer"))]
-    host = os.getenv("HOST", "127.0.0.1")
+    host = os.getenv("HOST", "0.0.0.0")
     return jsonify(addresses=urls, loopback_only=host in {"localhost", "127.0.0.1", "::1"})
 
 

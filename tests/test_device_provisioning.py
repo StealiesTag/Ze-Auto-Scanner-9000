@@ -30,6 +30,19 @@ def test_validation(settings, key, value):
         usb.validate_config({**settings, key: value})
 
 
+@pytest.mark.parametrize(("reason", "expected"), [
+    (2, "authentication timed out or expired"),
+    (201, "could not see that Wi-Fi network"),
+    (202, "rejected Wi-Fi authentication"),
+    (15, "security handshake did not complete"),
+    (999, "reason 999"),
+])
+def test_wifi_failure_message_uses_firmware_reason(reason, expected):
+    message = usb.wifi_failure_message({"wifi_reason": reason, "wifi_status": 6})
+    assert expected.lower() in message.lower()
+    assert "password" not in message.lower() or reason in {2, 202}
+
+
 class MockLink:
     def __init__(self, **options):
         self.closed = False

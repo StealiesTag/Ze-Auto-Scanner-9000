@@ -14,7 +14,7 @@ void setupLedFlash();
 
 namespace {
 constexpr size_t kLimit = 2048;
-constexpr uint32_t kWifiTimeout = 14000;
+constexpr uint32_t kWifiTimeout = 25000;
 constexpr uint32_t kHeartbeatInterval = 30000;
 struct Line { char text[kLimit]; };
 struct Settings {
@@ -26,11 +26,22 @@ QueueHandle_t commands;
 SemaphoreHandle_t serialOutput;
 String cameraId;
 Settings settings;
+String stagedWifiSsid, stagedWifiPassword;
+bool stagedWifiValidated = false;
 bool cameraReady = false, cameraServerStarted = false, serverConnected = false;
 bool durable = false;
 uint32_t lastHeartbeat = 0;
+volatile uint8_t lastWifiDisconnectReason = 0;
 RTC_NOINIT_ATTR uint32_t cameraInitMarker;
 constexpr uint32_t kCameraInitMarker = 0x507A4361;
+
+void rememberWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    const uint8_t reason = info.wifi_sta_disconnected.reason;
+    // Ignore the disconnect requested by join() before a new attempt starts.
+    if (reason != 8) lastWifiDisconnectReason = reason;
+  }
+}
 
 void reply(const char *id, bool success, const char *code = nullptr, JsonObjectConst result = JsonObjectConst()) {
   JsonDocument response;
@@ -149,6 +160,7 @@ bool saveSettings(const Settings &next) {
 void join(const Settings &value) {
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(false, false);
+  lastWifiDisconnectReason = 0;
   if (!value.ssid.isEmpty()) WiFi.begin(value.ssid.c_str(), value.password.c_str());
 }
 
@@ -233,7 +245,7 @@ void runCommand(const Line &line) {
     publicSettings(result, settings);
     result["device_id"] = cameraId;
     result["product"] = "Paparazzi";
-    result["firmware_version"] = "1.0.0";
+    result["firmware_version"] = "1.0.2";
     result["protocol_version"] = 1;
     result["wifi_connected"] = WiFi.status() == WL_CONNECTED;
     result["server_connected"] = serverConnected && WiFi.status() == WL_CONNECTED;
@@ -264,12 +276,17 @@ void runCommand(const Line &line) {
   }
   Settings candidate = settings;
   if (!parseSettings(data, candidate)) { reply(id, false, "invalid_config"); return; }
+  const bool alreadyOnTestedWifi = stagedWifiValidated
+      && stagedWifiSsid == candidate.ssid && stagedWifiPassword == candidate.password
+      && WiFi.status() == WL_CONNECTED;
   const bool changedWifi = candidate.ssid != settings.ssid || candidate.password != settings.password
-      || WiFi.status() != WL_CONNECTED;
-  if (changedWifi) join(candidate);
+      || WiFi.status() != WL_CONNECTED || WiFi.SSID() != candidate.ssid;
+  if (changedWifi && !alreadyOnTestedWifi) join(candidate);
   const uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiTimeout) delay(50);
   const char *error = nullptr;
+  const uint8_t wifiFailureReason = lastWifiDisconnectReason;
+  const int wifiFailureStatus = static_cast<int>(WiFi.status());
   if (WiFi.status() != WL_CONNECTED) error = "wifi_failed";
   else if (action != "TEST_WIFI" && !heartbeat(candidate, true)) error = "server_failed";
   if (!error && action == "SET_CONFIG") {
@@ -280,13 +297,33 @@ void runCommand(const Line &line) {
     if (!error) {
       settings = candidate;
       durable = true;
+      stagedWifiValidated = false;
+      stagedWifiSsid = "";
+      stagedWifiPassword = "";
       serverConnected = true;
       lastHeartbeat = millis() - kHeartbeatInterval;
     }
   }
-  if ((error || action != "SET_CONFIG") && changedWifi) join(settings);
+  if (error && changedWifi) {
+    join(settings);
+    stagedWifiValidated = false;
+    stagedWifiSsid = "";
+    stagedWifiPassword = "";
+  } else if (!error && action != "SET_CONFIG") {
+    // Keep the successfully tested connection alive so Test and save setup
+    // can persist it without forcing a second Wi-Fi authentication handshake.
+    stagedWifiSsid = candidate.ssid;
+    stagedWifiPassword = candidate.password;
+    stagedWifiValidated = true;
+  }
   WiFi.setAutoReconnect(true);
-  if (error) reply(id, false, error);
+  if (error && !strcmp(error, "wifi_failed")) {
+    JsonDocument diagnostic;
+    JsonObject details = diagnostic.to<JsonObject>();
+    details["wifi_reason"] = wifiFailureReason;
+    details["wifi_status"] = wifiFailureStatus;
+    reply(id, false, error, details);
+  } else if (error) reply(id, false, error);
   else {
     result["test_passed"] = true;
     result["saved"] = action == "SET_CONFIG";
@@ -382,6 +419,7 @@ void setup() {
   if (commands && serialOutput) xTaskCreate(usbTask, "paparazzi-usb", 8192, nullptr, 2, nullptr);
   loadSettings();
   WiFi.mode(WIFI_STA);
+  WiFi.onEvent(rememberWifiDisconnect, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   WiFi.persistent(false);
   WiFi.setSleep(false);
   join(settings);

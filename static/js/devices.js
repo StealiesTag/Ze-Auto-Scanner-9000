@@ -5,11 +5,21 @@
   const form = find('camera-settings');
   const port = find('usb-port');
   const password = find('wifi-password');
+  const replacePassword = find('replace-wifi-password');
+  const passwordHelp = find('wifi-password-help');
   const message = find('device-message');
   const server = find('server-url');
   let device;
   let network;
   let busy = false;
+
+  function updatePasswordHelp() {
+    const saved = Boolean(device?.saved || device?.password_set);
+    password.required = !saved && !replacePassword.checked;
+    passwordHelp.textContent = saved
+      ? 'Leave blank to keep the saved password. Select Replace saved password to change it or use an open network.'
+      : 'No Wi-Fi setup has been saved yet. Enter the password; for an open network, select Replace saved password.';
+  }
 
   async function api(path, data) {
     const response = await fetch('/api/devices' + path, {
@@ -19,7 +29,11 @@
       cache: 'no-store',
     });
     const result = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result.error || 'Paparazzi could not complete this request.');
+    if (!response.ok) {
+      const error = new Error(result.error || 'Paparazzi could not complete this request.');
+      error.code = result.code;
+      throw error;
+    }
     return result;
   }
 
@@ -76,6 +90,27 @@
     return data;
   }
 
+  function explainWifiFailure(error, config) {
+    if (error.code !== 'wifi_failed') return error;
+    const credentialNote = config.password
+      ? ' Paparazzi sent the password you entered to the ESP32; the ESP32 then timed out while joining Wi-Fi.'
+      : device?.password_set && !replacePassword.checked
+        ? ' No new password was sent; the ESP32 tried its saved password.'
+        : ' No password was sent to the ESP32.';
+    error.message += credentialNote;
+    return error;
+  }
+
+  function firmwareAtLeast(version, minimum) {
+    const current = String(version || '').split('.').map((part) => Number.parseInt(part, 10));
+    const required = minimum.split('.').map((part) => Number.parseInt(part, 10));
+    if (current.length !== 3 || current.some((part) => !Number.isInteger(part))) return false;
+    for (let index = 0; index < 3; index += 1) {
+      if (current[index] !== required[index]) return current[index] > required[index];
+    }
+    return true;
+  }
+
   function path(action) {
     return '/' + encodeURIComponent(device.device_id) + '/' + action;
   }
@@ -93,7 +128,8 @@
     }
     server.value = device.server_url || network.addresses[0]?.url || '';
     password.value = '';
-    find('replace-wifi-password').checked = false;
+    replacePassword.checked = false;
+    updatePasswordHelp();
     find('device-info').textContent = device.device_id + ' · Firmware ' + device.firmware_version;
     showStatus(device);
     showServer();
@@ -108,13 +144,25 @@
   find('show-wifi-password').addEventListener('change', (event) => {
     password.type = event.target.checked ? 'text' : 'password';
   });
+  replacePassword.addEventListener('change', updatePasswordHelp);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     run(async () => {
-      await api(path('command'), { command: 'SET_CONFIG', data: fields() });
+      if (!firmwareAtLeast(device?.firmware_version, '1.0.2')) {
+        throw new Error('This camera is running firmware ' + (device?.firmware_version || 'with an unknown version')
+          + '. Upload firmware 1.0.2 from firmware/PaparazziCamera/PaparazziCamera.ino, reconnect the camera, then run Test Wi-Fi, Test server, and Test and save setup again.');
+      }
+      const config = fields();
+      try {
+        await api(path('command'), { command: 'SET_CONFIG', data: config });
+      } catch (error) {
+        throw explainWifiFailure(error, config);
+      }
       password.value = '';
-      find('replace-wifi-password').checked = false;
+      replacePassword.checked = false;
       const status = await api(path('command'), { command: 'GET_STATUS' });
+      device = { ...device, ...status };
+      updatePasswordHelp();
       showStatus(status);
       return status.camera_ready
         ? 'Setup saved. Choose Use for scanning, then you can disconnect USB.'
@@ -140,7 +188,14 @@
     }
     const testing = command === 'TEST_WIFI' || command === 'TEST_SERVER';
     if (testing && !form.reportValidity()) return 'Complete the camera settings first.';
-    const result = await api(path('command'), { command, confirmation, data: testing ? fields() : undefined });
+    const config = testing ? fields() : undefined;
+    let result;
+    try {
+      result = await api(path('command'), { command, confirmation, data: config });
+    } catch (error) {
+      if (command === 'TEST_WIFI') throw explainWifiFailure(error, config);
+      throw error;
+    }
     if (command === 'GET_STATUS') showStatus(result);
     if (command === 'RESTART' || command === 'FACTORY_RESET') {
       form.hidden = true;
